@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { GameInfo } from '@shared/types'
 import {
   Dialog,
@@ -30,10 +30,10 @@ import {
   InfoRegular,
   CheckmarkCircleRegular,
   VideoRegular,
+  OpenRegular,
   BroomRegular as UninstallIcon
 } from '@fluentui/react-icons'
 import placeholderImage from '../assets/images/game-placeholder.png'
-import YouTube from 'react-youtube'
 import { useGames } from '@renderer/hooks/useGames'
 
 const useStyles = makeStyles({
@@ -125,14 +125,17 @@ const useStyles = makeStyles({
     position: 'relative',
     width: '100%',
     paddingTop: '56.25%', // 16:9 aspect ratio
-    marginTop: tokens.spacingVerticalM
+    marginTop: tokens.spacingVerticalM,
+    overflow: 'hidden',
+    borderRadius: tokens.borderRadiusMedium
   },
   youtubePlayer: {
     position: 'absolute',
     top: 0,
     left: 0,
     width: '100%',
-    height: '100%'
+    height: '100%',
+    border: 'none'
   },
   trailerTitle: {
     marginBottom: tokens.spacingVerticalS,
@@ -187,6 +190,65 @@ const GameDetailsDialog: React.FC<GameDetailsDialogProps> = ({
   const [loadingNote, setLoadingNote] = useState<boolean>(false)
   const [videoId, setVideoId] = useState<string | null>(null)
   const [loadingVideo, setLoadingVideo] = useState<boolean>(false)
+  const webviewRef = useRef<HTMLElement>(null)
+
+  // Inject CSS into the YouTube webview to hide non-player UI elements
+  const handleWebviewReady = useCallback(() => {
+    const wv = webviewRef.current as HTMLElement & {
+      insertCSS: (css: string) => Promise<string>
+      executeJavaScript: (code: string) => Promise<unknown>
+    }
+    if (!wv) return
+    // Hide everything except the video player
+    wv.insertCSS(`
+      #masthead-container, #top-row, #bottom-row,
+      ytd-watch-metadata, #related, #comments,
+      #secondary, #below, ytd-masthead,
+      #guide-button, ytd-mini-guide-renderer,
+      #chat-container, .ytp-chrome-top,
+      #info-contents, #meta-contents,
+      ytd-merch-shelf-renderer, #offer-module,
+      tp-yt-app-drawer, #guide-wrapper,
+      .ytd-watch-flexy #menu, #subscribe-button,
+      .ytd-watch-flexy #actions, #notification-preference-button,
+      ytd-watch-next-secondary-results-renderer,
+      #description, #header, #content-header,
+      ytd-engagement-panel-section-list-renderer,
+      #panels, ytd-watch-flexy #cinematics,
+      ytd-compact-video-renderer, .ytp-endscreen-content,
+      .ytp-ce-element, .ytp-pause-overlay,
+      ytd-clarification-renderer, ytd-info-panel-content-renderer {
+        display: none !important;
+      }
+      body { overflow: hidden !important; background: #000 !important; }
+      #page-manager, ytd-watch-flexy, #player-container-outer,
+      #player-container-inner, #player, #ytd-player,
+      .html5-video-player, video {
+        position: fixed !important;
+        top: 0 !important; left: 0 !important;
+        width: 100vw !important; height: 100vh !important;
+        max-width: 100vw !important; max-height: 100vh !important;
+        margin: 0 !important; padding: 0 !important;
+      }
+      ytd-watch-flexy[theater], ytd-watch-flexy[fullscreen] {
+        max-height: 100vh !important;
+      }
+      .html5-video-container { width: 100% !important; height: 100% !important; }
+    `)
+    // Auto-click the play button if paused
+    wv.executeJavaScript(`
+      const v = document.querySelector('video');
+      if (v && v.paused) v.play();
+    `)
+  }, [])
+
+  // Attach dom-ready listener when webview mounts
+  useEffect(() => {
+    const wv = webviewRef.current
+    if (!wv || !videoId) return
+    wv.addEventListener('dom-ready', handleWebviewReady)
+    return () => wv.removeEventListener('dom-ready', handleWebviewReady)
+  }, [videoId, handleWebviewReady])
 
   // Fetch note when dialog opens or game changes
   useEffect(() => {
@@ -537,21 +599,37 @@ const GameDetailsDialog: React.FC<GameDetailsDialogProps> = ({
                 <div className={styles.trailerTitle}>
                   <VideoRegular fontSize={16} />
                   <Text weight="semibold">Trailer:</Text>
+                  {videoId && (
+                    <a
+                      href={`https://www.youtube.com/watch?v=${videoId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{
+                        marginLeft: 'auto',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: tokens.spacingHorizontalXS,
+                        fontSize: 12,
+                        color: tokens.colorBrandForeground1,
+                        textDecoration: 'none'
+                      }}
+                    >
+                      <OpenRegular fontSize={12} />
+                      Watch on YouTube
+                    </a>
+                  )}
                 </div>
                 {loadingVideo ? (
                   <Spinner size="tiny" label="Searching for trailer..." />
                 ) : videoId ? (
                   <div className={styles.youtubeContainer}>
-                    <YouTube
-                      videoId={videoId}
+                    <webview
+                      ref={webviewRef}
                       className={styles.youtubePlayer}
-                      opts={{
-                        width: '100%',
-                        height: '100%',
-                        playerVars: {
-                          autoplay: 0
-                        }
-                      }}
+                      src={`https://www.youtube.com/watch?v=${videoId}`}
+                      partition="persist:youtube"
+                      allowpopups="true"
+                      title="Game Trailer"
                     />
                   </div>
                 ) : (

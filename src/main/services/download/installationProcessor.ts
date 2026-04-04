@@ -9,6 +9,14 @@ export class InstallationProcessor {
   private adbService: typeof adbService
   private debouncedEmitUpdate: () => void
 
+  // Installation mutex: only one installation at a time to prevent ADB conflicts
+  private installQueue: Array<{
+    item: DownloadItem
+    deviceId: string
+    resolve: (result: boolean) => void
+  }> = []
+  private isInstalling = false
+
   constructor(
     queueManager: QueueManager,
     adbSvc: typeof adbService,
@@ -41,7 +49,58 @@ export class InstallationProcessor {
 
   public async startInstallation(item: DownloadItem, deviceId: string): Promise<boolean> {
     console.log(
-      `[InstallProc] Starting installation process for ${item.releaseName} on device ${deviceId}`
+      `[InstallProc] Queuing installation for ${item.releaseName} on device ${deviceId} (queue length: ${this.installQueue.length}, installing: ${this.isInstalling})`
+    )
+
+    // Enqueue and wait for our turn
+    return new Promise<boolean>((resolve) => {
+      this.installQueue.push({ item, deviceId, resolve })
+      this.processInstallQueue()
+    })
+  }
+
+  private async processInstallQueue(): Promise<void> {
+    if (this.isInstalling) {
+      return // Another installation is running; it will call us again when done
+    }
+
+    const next = this.installQueue.shift()
+    if (!next) {
+      console.log('[InstallProc] Installation queue empty')
+      return
+    }
+
+    this.isInstalling = true
+    const { item, deviceId, resolve } = next
+
+    console.log(
+      `[InstallProc] Starting installation for ${item.releaseName} on device ${deviceId} (${this.installQueue.length} remaining in queue)`
+    )
+
+    try {
+      const result = await this.executeInstallation(item, deviceId)
+      resolve(result)
+    } catch (error: unknown) {
+      console.error(
+        `[InstallProc] Unexpected error in installation queue for ${item.releaseName}:`,
+        error
+      )
+      resolve(false)
+    } finally {
+      this.isInstalling = false
+      // Process the next item in the queue
+      if (this.installQueue.length > 0) {
+        console.log(
+          `[InstallProc] Processing next installation in queue (${this.installQueue.length} remaining)`
+        )
+        this.processInstallQueue()
+      }
+    }
+  }
+
+  private async executeInstallation(item: DownloadItem, deviceId: string): Promise<boolean> {
+    console.log(
+      `[InstallProc] Executing installation for ${item.releaseName} on device ${deviceId}`
     )
     if (!item.downloadPath || !existsSync(item.downloadPath)) {
       console.error(

@@ -1,4 +1,4 @@
-import React, { ReactNode, useEffect, useState, useCallback } from 'react'
+import React, { ReactNode, useEffect, useState, useCallback, useMemo } from 'react'
 import { DownloadContext, DownloadContextType } from './DownloadContext'
 import { DownloadItem, GameInfo } from '@shared/types'
 
@@ -132,18 +132,21 @@ export const DownloadProvider: React.FC<DownloadProviderProps> = ({ children }) 
     }
   }, [])
 
-  const value: DownloadContextType = {
-    queue,
-    isLoading,
-    error,
-    addToQueue,
-    removeFromQueue,
-    cancelDownload,
-    retryDownload,
-    pauseDownload,
-    resumeDownload,
-    deleteFiles
-  }
+  const value = useMemo<DownloadContextType>(
+    () => ({
+      queue,
+      isLoading,
+      error,
+      addToQueue,
+      removeFromQueue,
+      cancelDownload,
+      retryDownload,
+      pauseDownload,
+      resumeDownload,
+      deleteFiles
+    }),
+    [queue, isLoading, error, addToQueue, removeFromQueue, cancelDownload, retryDownload, pauseDownload, resumeDownload, deleteFiles]
+  )
 
   return <DownloadContext.Provider value={value}>{children}</DownloadContext.Provider>
 }

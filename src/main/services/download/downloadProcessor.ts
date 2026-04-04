@@ -1,8 +1,7 @@
 import { join } from 'path'
-import { promises as fs, createReadStream, createWriteStream, promises as fsPromises } from 'fs'
+import { promises as fs, promises as fsPromises } from 'fs'
 import { execa, ExecaError } from 'execa'
 import crypto from 'crypto'
-import { tmpdir } from 'os'
 import { QueueManager } from './queueManager'
 import dependencyService from '../dependencyService'
 import mirrorService from '../mirrorService'
@@ -17,10 +16,9 @@ interface VrpConfig {
   password?: string
 }
 
-// Unified download controller that handles both download cancellation and mount process
+// Unified download controller that handles download cancellation
 interface DownloadController {
-  cancel: () => void // Cancel the download streams
-  mountProcess?: ReturnType<typeof execa> // Optional mount process to kill
+  cancel: () => void // Cancel the download (kills rclone process)
 }
 
 export class DownloadProcessor {
@@ -70,7 +68,6 @@ export class DownloadProcessor {
     finalStatus: 'Cancelled' | 'Error' = 'Cancelled',
     errorMsg?: string
   ): void {
-    // Cancel download and clean up mount process
     const downloadController = this.activeDownloads.get(releaseName)
     if (downloadController) {
       console.log(`[DownProc] Cancelling download for ${releaseName}...`)
@@ -80,18 +77,6 @@ export class DownloadProcessor {
       } catch (cancelError) {
         console.error(`[DownProc] Error cancelling download for ${releaseName}:`, cancelError)
       }
-
-      // Clean up mount process if it exists
-      if (downloadController.mountProcess) {
-        console.log(`[DownProc] Cleaning up mount process for ${releaseName}...`)
-        try {
-          downloadController.mountProcess.kill('SIGTERM')
-          console.log(`[DownProc] Terminated mount process for ${releaseName}.`)
-        } catch (killError) {
-          console.warn(`[DownProc] Failed to kill mount process for ${releaseName}:`, killError)
-        }
-      }
-
       this.activeDownloads.delete(releaseName)
     } else {
       console.log(`[DownProc] No active download found for ${releaseName} to cancel.`)
@@ -146,7 +131,9 @@ export class DownloadProcessor {
       return { success: false, startExtraction: false }
     }
 
-    const downloadPath = join(item.downloadPath, item.releaseName)
+    const downloadPath = item.downloadPath.endsWith(item.releaseName)
+      ? item.downloadPath
+      : join(item.downloadPath, item.releaseName)
     this.queueManager.updateItem(item.releaseName, { downloadPath: downloadPath })
 
     try {
@@ -197,40 +184,37 @@ export class DownloadProcessor {
       const configFilePath = mirrorService.getActiveMirrorConfigPath()
       const remoteName = mirrorService.getActiveMirrorRemoteName()
 
-      if (!configFilePath || !remoteName) {
-        console.warn(
-          '[DownProc] Failed to get mirror config file path, falling back to public endpoint'
-        )
-        // Fall back to public endpoint logic below
-      } else {
+      if (configFilePath && remoteName) {
         try {
-          // Use mount-based download with mirror configuration
-          console.log(`[DownProc] Using mount-based download with mirror: ${activeMirror.name}`)
-          return await this.startMountBasedDownload(item, {
-            configFilePath,
-            remoteName
-          })
+          console.log(`[DownProc] Using rclone copy with mirror: ${activeMirror.name}`)
+          return await this.startRcloneCopyDownload(item, { configFilePath, remoteName })
         } catch (mirrorError: unknown) {
           console.error(
-            `[DownProc] Mirror mount-based download failed for ${item.releaseName}, falling back to public endpoint:`,
+            `[DownProc] Mirror download failed for ${item.releaseName}, falling back to public endpoint:`,
             mirrorError
           )
-          // Fall through to public endpoint logic
+          // Fall through to public endpoint
         }
+      } else {
+        console.warn(
+          '[DownProc] Failed to get mirror config, falling back to public endpoint'
+        )
       }
     }
 
-    // Fall back to public endpoint using mount-based download (rclone mount + aria2c)
-    console.log(`[DownProc] Using mount-based download for public endpoint: ${item.releaseName}`)
-    return await this.startMountBasedDownload(item)
+    // Use public endpoint via rclone copy (no FUSE/macFUSE required)
+    console.log(`[DownProc] Using rclone copy for public endpoint: ${item.releaseName}`)
+    return await this.startRcloneCopyDownload(item)
   }
 
-  // Mount-based download using rclone mount + rsync for better pause/resume
-  public async startMountBasedDownload(
+  // rclone copy based download (no macFUSE required)
+  // Supports pause/resume via --partial-suffix and file-level skip
+  public async startRcloneCopyDownload(
     item: DownloadItem,
-    mirrorConfig?: { configFilePath: string; remoteName: string }
+    mirrorConfig?: { configFilePath: string; remoteName: string },
+    isResume: boolean = false
   ): Promise<{ success: boolean; startExtraction: boolean; finalState?: DownloadItem }> {
-    console.log(`[DownProc] Starting mount-based download for ${item.releaseName}...`)
+    console.log(`[DownProc] ${isResume ? 'Resuming' : 'Starting'} rclone copy download for ${item.releaseName}...`)
 
     if (!this.vrpConfig?.baseUri || !this.vrpConfig?.password) {
       console.error('[DownProc] Missing VRP baseUri or password.')
@@ -245,319 +229,299 @@ export class DownloadProcessor {
       return { success: false, startExtraction: false }
     }
 
-    const downloadPath = join(item.downloadPath, item.releaseName)
+    const downloadPath = item.downloadPath.endsWith(item.releaseName)
+      ? item.downloadPath
+      : join(item.downloadPath, item.releaseName)
     this.queueManager.updateItem(item.releaseName, { downloadPath: downloadPath })
 
-    // Create unique mount point for this download (sanitize name to avoid issues)
-    const sanitizedName = item.releaseName.replace(/[^a-zA-Z0-9-]/g, '_')
-    const mountPoint = join(tmpdir(), `apprenticevr-mount-${sanitizedName}-${Date.now()}`)
-
     try {
-      // Create download directory
       await fs.mkdir(downloadPath, { recursive: true })
 
-      // Create mount point directory
-      await fs.mkdir(mountPoint, { recursive: true })
-      console.log(`[DownProc] Created mount point: ${mountPoint}`)
-
-      // Check available disk space
-      const availableSpace = await getAvailableDiskSpace(item.downloadPath)
-      const gameSizeBytes = item.size ? parseSizeToBytes(item.size) : 0
-      const requiredSpace = gameSizeBytes * 2
-
-      if (availableSpace !== null && requiredSpace > 0 && availableSpace < requiredSpace) {
-        const errorMsg = `Insufficient disk space. Required: ${formatBytes(requiredSpace)}, Available: ${formatBytes(availableSpace)}`
-        console.error(`[DownProc] ${errorMsg} for ${item.releaseName}`)
-        this.updateItemStatus(item.releaseName, 'Error', 0, errorMsg)
-        await this.cleanup(mountPoint, item.releaseName)
-        return { success: false, startExtraction: false }
+      // On resume, measure already-downloaded bytes so progress doesn't reset to 0%
+      let baselineBytes = 0
+      const resumeFloor = isResume ? (item.progress ?? 0) : 0
+      if (isResume) {
+        try {
+          const existingFiles = await this.getFilesRecursively(downloadPath)
+          for (const f of existingFiles) {
+            if (!f.relativePath.endsWith('.partial')) {
+              baselineBytes += f.size
+            }
+          }
+          console.log(`[DownProc] Resume baseline: ${this.formatBytes(baselineBytes)} already downloaded for ${item.releaseName}`)
+        } catch {
+          // Directory may not exist yet, ignore
+        }
+        // Keep current progress until rclone stats arrive
+        this.updateItemStatus(item.releaseName, 'Downloading', resumeFloor)
+      } else {
+        this.updateItemStatus(item.releaseName, 'Downloading', 0)
       }
 
-      this.updateItemStatus(item.releaseName, 'Downloading', 0)
-
-      // Set up source and mount arguments based on mirror config or public endpoint
       let source: string
-      let mountArgs: string[]
+      let copyArgs: string[]
+      const nullConfigPath = process.platform === 'win32' ? 'NUL' : '/dev/null'
 
       if (mirrorConfig) {
-        // Use mirror configuration
         source = `${mirrorConfig.remoteName}:/Quest Games/${item.releaseName}`
-        console.log(`[DownProc] Using mirror mount: ${source}`)
+        console.log(`[DownProc] Using mirror rclone copy: ${source}`)
 
-        mountArgs = [
-          'mount',
+        copyArgs = [
+          'copy',
           source,
-          mountPoint,
+          downloadPath,
           '--config',
           mirrorConfig.configFilePath,
           '--no-check-certificate',
-          '--read-only',
-          '--vfs-cache-mode',
-          'minimal',
-          '--vfs-read-ahead',
-          '128M'
+          '--stats',
+          '1s',
+          '--stats-log-level',
+          'NOTICE',
+          '--use-json-log',
+          '--partial-suffix',
+          '.partial',
+          '--transfers',
+          '4',
+          '--multi-thread-streams',
+          '4',
+          '--low-level-retries',
+          '10',
+          '--retries',
+          '5'
         ]
       } else {
-        // Use public endpoint configuration
         const gameNameHash = crypto
           .createHash('md5')
           .update(item.releaseName + '\n')
           .digest('hex')
         source = `:http:/${gameNameHash}`
+        console.log(`[DownProc] Using public endpoint rclone copy: ${source}`)
 
-        // Get the appropriate null config path based on platform
-        const nullConfigPath = process.platform === 'win32' ? 'NUL' : '/dev/null'
-        console.log(`[DownProc] Using public endpoint mount: ${source}`)
-
-        mountArgs = [
-          'mount',
+        copyArgs = [
+          'copy',
           source,
-          mountPoint,
+          downloadPath,
           '--config',
           nullConfigPath,
           '--http-url',
-          this.vrpConfig.baseUri,
+          this.vrpConfig.baseUri!,
           '--no-check-certificate',
-          '--read-only',
-          '--vfs-cache-mode',
-          'minimal',
-          '--vfs-read-ahead',
-          '128M'
+          '--stats',
+          '1s',
+          '--stats-log-level',
+          'NOTICE',
+          '--use-json-log',
+          '--partial-suffix',
+          '.partial',
+          '--transfers',
+          '4',
+          '--multi-thread-streams',
+          '4',
+          '--low-level-retries',
+          '10',
+          '--retries',
+          '5'
         ]
       }
 
-      // Start rclone mount (non-daemon mode for better error handling)
-      console.log(`[DownProc] Mounting ${source} to ${mountPoint}`)
+      // Apply bandwidth limit if set
+      const downloadSpeedLimit = settingsService.getDownloadSpeedLimit()
+      if (downloadSpeedLimit > 0) {
+        copyArgs.push('--bwlimit', `${downloadSpeedLimit}k`)
+      }
 
-      // Start the mount as background process
-      const mountProcess = execa(rclonePath, mountArgs, {
+      console.log(`[DownProc] Running: rclone ${copyArgs.join(' ')}`)
+
+      const rcloneProcess = execa(rclonePath, copyArgs, {
         all: true,
         buffer: false,
         windowsHide: true
       })
 
-      // Store mount process for cleanup (we'll add it to the main download controller later)
-      // Note: We'll remove this separate mount storage once we integrate it into the main controller
-
-      // Wait for mount to be ready with timeout and verification
-      let mountReady = false
-      for (let i = 0; i < 10; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 1000))
-        try {
-          const testRead = await fs.readdir(mountPoint)
-          if (testRead.length >= 0) {
-            // Even empty directory means mount is working
-            mountReady = true
-            console.log(`[DownProc] Mount ready after ${i + 1} seconds`)
-            break
-          }
-        } catch {
-          console.log(`[DownProc] Mount not ready yet, attempt ${i + 1}/10`)
-        }
-      }
-
-      if (!mountReady) {
-        throw new Error('Mount failed to become ready within 10 seconds')
-      }
-
-      // Verify mount contents are accessible and download all files
-      try {
-        const mountContents = await fs.readdir(mountPoint)
-        console.log(`[DownProc] Mount contents: ${mountContents.join(', ')}`)
-
-        if (mountContents.length === 0) {
-          throw new Error('No files found in mounted directory')
-        }
-
-        console.log(`[DownProc] Found ${mountContents.length} file(s) to download`)
-      } catch (readError) {
-        console.error(`[DownProc] Failed to read mount directory: ${readError}`)
-        this.updateItemStatus(item.releaseName, 'Error', 0, 'Failed to access mounted directory')
-        await this.cleanup(mountPoint, item.releaseName)
-        return { success: false, startExtraction: false }
-      }
-
-      // Start cross-platform download using Node.js streams
-      console.log(
-        `[DownProc] Starting stream-based download from ${mountPoint}/ to ${downloadPath}/`
-      )
-
-      // Get all files recursively from mount point
-      const filesToDownload = await this.getFilesRecursively(mountPoint)
-      console.log(
-        `[DownProc] Found ${filesToDownload.length} file(s) to download: ${filesToDownload.map((f) => f.relativePath).join(', ')}`
-      )
-
-      // Calculate total size for progress tracking
-      let totalSize = 0
-      for (const file of filesToDownload) {
-        totalSize += file.size
-      }
-      console.log(`[DownProc] Total download size: ${this.formatBytes(totalSize)}`)
-
-      // Calculate already downloaded size (for resume)
-      let totalCopied = 0
-      for (const file of filesToDownload) {
-        const destPath = join(downloadPath, file.relativePath)
-        try {
-          const destStat = await fsPromises.stat(destPath)
-          totalCopied += destStat.size
-        } catch {
-          // File doesn't exist, no bytes downloaded yet
-        }
-      }
-
-      if (totalCopied > 0) {
-        const initialProgress = Math.round((totalCopied / totalSize) * 100)
-        console.log(
-          `[DownProc] Resuming download from ${this.formatBytes(totalCopied)} (${initialProgress}%)`
-        )
-
-        // Update initial progress in UI
-        this.updateItemStatus(
-          item.releaseName,
-          'Downloading',
-          initialProgress,
-          undefined,
-          undefined,
-          undefined
-        )
-      }
-      let downloadCancelled = false
-      const startTime = Date.now()
-
-      // Store cancellation token
-      const cancellationToken = { cancelled: false }
+      // Store download controller for cancel/pause
       this.activeDownloads.set(item.releaseName, {
         cancel: () => {
-          cancellationToken.cancelled = true
-          downloadCancelled = true
-        },
-        mountProcess: mountProcess
+          try {
+            rcloneProcess.kill('SIGTERM')
+          } catch {
+            // Process already exited
+          }
+        }
       })
 
-      // Download each file with resume support
-      for (let i = 0; i < filesToDownload.length; i++) {
-        const file = filesToDownload[i]
-        const currentItemState = this.queueManager.findItem(item.releaseName)
+      // Parse rclone JSON log output for progress
+      let lastProgress = -1
+      let lastSpeed = ''
+      let statsCount = 0
+      if (rcloneProcess.all) {
+        let lineBuffer = ''
+        rcloneProcess.all.on('data', (chunk: Buffer) => {
+          lineBuffer += chunk.toString()
+          // Split on both \n and \r — rclone may emit \r-terminated lines
+          // alongside \n-terminated JSON when --progress leaks through
+          const lines = lineBuffer.split(/[\r\n]+/)
+          lineBuffer = lines.pop() || '' // Keep incomplete line in buffer
 
-        if (
-          !currentItemState ||
-          currentItemState.status !== 'Downloading' ||
-          cancellationToken.cancelled
-        ) {
-          console.log(`[DownProc] Download cancelled or status changed for ${item.releaseName}`)
-          downloadCancelled = true
-          break
-        }
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (!trimmed || trimmed[0] !== '{') continue // Fast skip non-JSON
+            try {
+              const parsed = JSON.parse(trimmed)
+              if (parsed.stats) {
+                const stats = parsed.stats
+                statsCount++
 
-        console.log(
-          `[DownProc] Downloading file ${i + 1}/${filesToDownload.length}: ${file.relativePath}`
-        )
+                // Log first few stats for diagnostics
+                if (statsCount <= 3) {
+                  console.log(
+                    `[DownProc] Stats #${statsCount} for ${item.releaseName}: ` +
+                    `bytes=${stats.bytes}, totalBytes=${stats.totalBytes}, speed=${stats.speed}, ` +
+                    `eta=${stats.eta}, transferring=${Array.isArray(stats.transferring) ? stats.transferring.length : 0} entries`
+                  )
+                  if (Array.isArray(stats.transferring) && stats.transferring.length > 0) {
+                    const t = stats.transferring[0]
+                    console.log(
+                      `[DownProc]   First transfer: name=${t.name}, bytes=${t.bytes}, ` +
+                      `size=${t.size}, percentage=${t.percentage}, speed=${t.speed}`
+                    )
+                  }
+                }
 
-        const sourcePath = join(mountPoint, file.relativePath)
-        const destPath = join(downloadPath, file.relativePath)
+                // Calculate percentage using multiple fallback strategies:
+                // 1. Top-level totalBytes (best — available once directory listing completes)
+                // 2. Aggregate per-transfer percentage (rclone's own per-file calculation)
+                // 3. Aggregate per-transfer bytes/size (manual calculation)
+                let percentage = 0
+                if (stats.totalBytes > 0) {
+                  // When resuming, rclone's totalBytes only reflects remaining work.
+                  // Add baseline (already-downloaded) bytes for accurate overall progress.
+                  const effectiveTotal = stats.totalBytes + baselineBytes
+                  const effectiveBytes = stats.bytes + baselineBytes
+                  percentage = Math.round((effectiveBytes / effectiveTotal) * 100)
+                } else if (
+                  Array.isArray(stats.transferring) &&
+                  stats.transferring.length > 0
+                ) {
+                  // Use rclone's pre-calculated percentage per transfer
+                  let weightedPct = 0
+                  let totalWeight = 0
+                  let manualBytes = 0
+                  let manualSize = 0
 
-        // Ensure destination directory exists
-        await fsPromises.mkdir(join(destPath, '..'), { recursive: true })
+                  for (const t of stats.transferring) {
+                    if (typeof t.percentage === 'number' && t.percentage > 0) {
+                      const weight = t.size > 0 ? t.size : 1
+                      weightedPct += t.percentage * weight
+                      totalWeight += weight
+                    }
+                    if (t.size > 0) {
+                      manualSize += t.size
+                      manualBytes += t.bytes || 0
+                    }
+                  }
 
-        // Check if file already exists and get its size for resume
-        let startOffset = 0
-        try {
-          const destStat = await fsPromises.stat(destPath)
-          startOffset = destStat.size
-          console.log(
-            `[DownProc] Resuming ${file.relativePath} from offset ${this.formatBytes(startOffset)}`
-          )
-        } catch {
-          // File doesn't exist, start from beginning
-        }
+                  if (totalWeight > 0) {
+                    // Account for baseline: per-transfer % only covers remaining files
+                    if (baselineBytes > 0 && manualSize > 0) {
+                      const remainingBytes = (weightedPct / totalWeight / 100) * manualSize
+                      percentage = Math.round(((baselineBytes + remainingBytes) / (baselineBytes + manualSize)) * 100)
+                    } else {
+                      percentage = Math.round(weightedPct / totalWeight)
+                    }
+                  } else if (manualSize > 0) {
+                    percentage = Math.round(((manualBytes + baselineBytes) / (manualSize + baselineBytes)) * 100)
+                  }
+                }
+                // Never go below the paused progress on resume, cap at 99 (100 set on completion)
+                percentage = Math.max(resumeFloor, Math.min(99, percentage))
 
-        // Copy file with progress tracking
-        const bytesCopied = await this.copyFileWithProgress(
-          sourcePath,
-          destPath,
-          startOffset,
-          (progress) => {
-            const fileProgress = totalCopied + progress
-            const overallProgress = Math.round((fileProgress / totalSize) * 100)
-            const elapsed = Date.now() - startTime
-            const speed = (fileProgress - startOffset) / (elapsed / 1000)
-            const remaining = totalSize - fileProgress
-            const eta = remaining / speed
+                // Speed: prefer top-level stats.speed, fall back to sum of transfer speeds
+                let speed = stats.speed || 0
+                if (speed === 0 && Array.isArray(stats.transferring)) {
+                  for (const t of stats.transferring) {
+                    speed += (t.speed || 0)
+                  }
+                }
 
-            this.updateItemStatus(
-              item.releaseName,
-              'Downloading',
-              overallProgress,
-              undefined,
-              this.formatSpeed(speed),
-              this.formatEta(eta)
-            )
-          },
-          cancellationToken
-        )
+                const eta = stats.eta ?? 0
+                const formattedSpeed = this.formatSpeed(speed)
 
-        totalCopied += bytesCopied
-
-        if (cancellationToken.cancelled) {
-          console.log(`[DownProc] Download cancelled during file ${file.relativePath}`)
-          downloadCancelled = true
-          break
-        }
+                // Update whenever progress OR speed changes
+                if (percentage !== lastProgress || formattedSpeed !== lastSpeed) {
+                  lastProgress = percentage
+                  lastSpeed = formattedSpeed
+                  this.updateItemStatus(
+                    item.releaseName,
+                    'Downloading',
+                    percentage,
+                    undefined,
+                    formattedSpeed,
+                    this.formatEta(eta)
+                  )
+                }
+              }
+            } catch {
+              // Not JSON or not a stats line, ignore
+            }
+          }
+        })
+      } else {
+        console.warn(`[DownProc] No rclone 'all' stream for ${item.releaseName} — progress tracking unavailable`)
       }
 
-      if (downloadCancelled) {
-        this.activeDownloads.delete(item.releaseName)
-        const finalItemState = this.queueManager.findItem(item.releaseName)
-        return { success: false, startExtraction: false, finalState: finalItemState }
-      }
+      // Wait for rclone to finish
+      await rcloneProcess
 
-      // Check final state
-      const finalItemState = this.queueManager.findItem(item.releaseName)
-      if (!finalItemState || finalItemState.status !== 'Downloading') {
-        console.log(
-          `[DownProc] rsync process for ${item.releaseName} finished, but final status is ${finalItemState?.status}.`
-        )
-        await this.cleanup(mountPoint, item.releaseName)
-        if (this.activeDownloads.has(item.releaseName)) {
-          this.activeDownloads.delete(item.releaseName)
-          this.queueManager.updateItem(item.releaseName, { pid: undefined })
-        }
-        return { success: false, startExtraction: false, finalState: finalItemState }
-      }
-
-      console.log(`[DownProc] rsync download completed successfully for ${item.releaseName}`)
+      // Clean up
       this.activeDownloads.delete(item.releaseName)
       this.queueManager.updateItem(item.releaseName, { pid: undefined })
 
-      // Cleanup mount
-      await this.cleanup(mountPoint, item.releaseName)
+      // Verify the download completed
+      const finalItem = this.queueManager.findItem(item.releaseName)
+      if (!finalItem || finalItem.status !== 'Downloading') {
+        console.log(
+          `[DownProc] rclone copy for ${item.releaseName} finished but status is ${finalItem?.status}`
+        )
+        return { success: false, startExtraction: false, finalState: finalItem }
+      }
 
-      return { success: true, startExtraction: true, finalState: finalItemState }
+      // Clean up any leftover .partial files (shouldn't exist if rclone finished successfully)
+      try {
+        const files = await this.getFilesRecursively(downloadPath)
+        for (const file of files) {
+          if (file.relativePath.endsWith('.partial')) {
+            await fs.unlink(join(downloadPath, file.relativePath))
+            console.log(`[DownProc] Cleaned up partial file: ${file.relativePath}`)
+          }
+        }
+      } catch {
+        // Ignore cleanup errors
+      }
+
+      console.log(`[DownProc] rclone copy download completed successfully for ${item.releaseName}`)
+      this.updateItemStatus(item.releaseName, 'Downloading', 100)
+      return { success: true, startExtraction: true, finalState: finalItem }
     } catch (error: unknown) {
       const isExecaError = (err: unknown): err is ExecaError =>
         typeof err === 'object' && err !== null && 'shortMessage' in err
+
       const currentItemState = this.queueManager.findItem(item.releaseName)
       const statusBeforeCatch = currentItemState?.status ?? 'Unknown'
 
-      console.error(`[DownProc] Mount-based download error for ${item.releaseName}:`, error)
+      console.error(`[DownProc] rclone copy download error for ${item.releaseName}:`, error)
 
-      // Cleanup
-      await this.cleanup(mountPoint, item.releaseName)
       if (this.activeDownloads.has(item.releaseName)) {
         this.activeDownloads.delete(item.releaseName)
         this.queueManager.updateItem(item.releaseName, { pid: undefined })
       }
 
-      // Handle cancellation
-      if (isExecaError(error) && error.exitCode === 143) {
-        console.log(`[DownProc] Mount-based download cancelled for ${item.releaseName}`)
+      // Handle cancellation (SIGTERM = exit code 143 on unix, or cancelled status)
+      if (isExecaError(error) && (error.exitCode === 143 || error.isCanceled)) {
+        console.log(`[DownProc] rclone copy download cancelled for ${item.releaseName}`)
         return { success: false, startExtraction: false, finalState: currentItemState }
       }
 
-      // Handle other errors
-      let errorMessage = 'Mount-based download failed.'
+      let errorMessage = 'Download failed.'
       if (isExecaError(error)) {
         errorMessage = error.shortMessage || error.message
       } else if (error instanceof Error) {
@@ -584,56 +548,10 @@ export class DownloadProcessor {
     }
   }
 
-  // Cleanup helper for mount points
-  private async cleanup(mountPoint: string, releaseName?: string): Promise<void> {
-    try {
-      console.log(`[DownProc] Cleaning up mount point: ${mountPoint}`)
-
-      // Stop mount process if it exists
-      if (releaseName) {
-        const downloadController = this.activeDownloads.get(releaseName)
-        if (downloadController?.mountProcess) {
-          try {
-            downloadController.mountProcess.kill('SIGTERM')
-            console.log(`[DownProc] Terminated mount process for ${releaseName}`)
-          } catch (killError) {
-            console.warn(`[DownProc] Failed to kill mount process for ${releaseName}:`, killError)
-          }
-        }
-      }
-
-      // Try to unmount
-      try {
-        if (process.platform === 'linux') {
-          await execa('fusermount', ['-u', mountPoint])
-        } else if (process.platform === 'darwin') {
-          await execa('umount', [mountPoint])
-        } else if (process.platform === 'win32') {
-          // Windows unmount is handled by rclone daemon
-          await execa('taskkill', ['/F', '/IM', 'rclone.exe'])
-        }
-        console.log(`[DownProc] Successfully unmounted ${mountPoint}`)
-      } catch (unmountError) {
-        console.warn(`[DownProc] Failed to unmount ${mountPoint}:`, unmountError)
-      }
-
-      // Remove mount directory
-      try {
-        await fs.rmdir(mountPoint)
-        console.log(`[DownProc] Removed mount directory ${mountPoint}`)
-      } catch (removeError) {
-        console.warn(`[DownProc] Failed to remove mount directory ${mountPoint}:`, removeError)
-      }
-    } catch (cleanupError) {
-      console.error(`[DownProc] Cleanup error for ${mountPoint}:`, cleanupError)
-    }
-  }
-
-  // Method to pause a download (for stream-based downloads)
+  // Method to pause a download (kills rclone copy process)
   public pauseDownload(releaseName: string): void {
     console.log(`[DownProc] Pausing download for ${releaseName}...`)
 
-    // Cancel download and clean up mount process
     const downloadController = this.activeDownloads.get(releaseName)
     if (downloadController) {
       try {
@@ -642,18 +560,6 @@ export class DownloadProcessor {
       } catch (cancelError) {
         console.error(`[DownProc] Error pausing download for ${releaseName}:`, cancelError)
       }
-
-      // Clean up mount process if it exists
-      if (downloadController.mountProcess) {
-        console.log(`[DownProc] Cleaning up mount process for ${releaseName}...`)
-        try {
-          downloadController.mountProcess.kill('SIGTERM')
-          console.log(`[DownProc] Terminated mount process for ${releaseName}.`)
-        } catch (killError) {
-          console.warn(`[DownProc] Failed to kill mount process for ${releaseName}:`, killError)
-        }
-      }
-
       this.activeDownloads.delete(releaseName)
     } else {
       console.log(`[DownProc] No active download found for ${releaseName} to pause.`)
@@ -679,12 +585,19 @@ export class DownloadProcessor {
   ): Promise<{ success: boolean; startExtraction: boolean; finalState?: DownloadItem }> {
     console.log(`[DownProc] Resuming download for ${item.releaseName}...`)
 
-    // Update status back to Downloading and restart the download
-    // The file streams will automatically resume from where they left off using file offsets
-    this.updateItemStatus(item.releaseName, 'Downloading', item.progress ?? 0)
+    // Check if there's an active mirror (same logic as startDownload)
+    let mirrorConfig: { configFilePath: string; remoteName: string } | undefined
+    const activeMirror = await mirrorService.getActiveMirror()
+    if (activeMirror) {
+      const configFilePath = mirrorService.getActiveMirrorConfigPath()
+      const remoteName = mirrorService.getActiveMirrorRemoteName()
+      if (configFilePath && remoteName) {
+        mirrorConfig = { configFilePath, remoteName }
+      }
+    }
 
-    // Restart the download using the stream-based approach
-    return await this.startMountBasedDownload(item)
+    // rclone copy with --partial-suffix automatically resumes from where it left off
+    return await this.startRcloneCopyDownload(item, mirrorConfig, true)
   }
 
   // Method to check if a download is active
@@ -722,79 +635,6 @@ export class DownloadProcessor {
     }
 
     return files
-  }
-
-  // Helper method to copy a file with progress tracking and resume support
-  private async copyFileWithProgress(
-    sourcePath: string,
-    destPath: string,
-    startOffset: number,
-    onProgress: (progress: number) => void,
-    cancellationToken: { cancelled: boolean }
-  ): Promise<number> {
-    return new Promise((resolve, reject) => {
-      let copiedBytes = startOffset
-
-      const readStream = createReadStream(sourcePath, { start: startOffset })
-      const writeStream = createWriteStream(destPath, { flags: startOffset > 0 ? 'a' : 'w' })
-
-      // Handle bandwidth limiting
-      const downloadSpeedLimit = settingsService.getDownloadSpeedLimit()
-      let lastProgressTime = Date.now()
-      let bytesInSecond = 0
-
-      readStream.on('data', (chunk: string | Buffer) => {
-        if (cancellationToken.cancelled) {
-          readStream.destroy()
-          writeStream.destroy()
-          return
-        }
-
-        const chunkSize = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(chunk)
-        copiedBytes += chunkSize
-        bytesInSecond += chunkSize
-
-        // Bandwidth limiting
-        const now = Date.now()
-        if (downloadSpeedLimit > 0 && now - lastProgressTime >= 1000) {
-          const maxBytesPerSecond = downloadSpeedLimit * 1024 // Convert KB/s to B/s
-          if (bytesInSecond > maxBytesPerSecond) {
-            const delay = (bytesInSecond / maxBytesPerSecond - 1) * 1000
-            setTimeout(() => {
-              if (!cancellationToken.cancelled) {
-                onProgress(copiedBytes - startOffset)
-              }
-            }, delay)
-          } else {
-            onProgress(copiedBytes - startOffset)
-          }
-          bytesInSecond = 0
-          lastProgressTime = now
-        } else {
-          onProgress(copiedBytes - startOffset)
-        }
-      })
-
-      readStream.on('end', () => {
-        writeStream.end()
-      })
-
-      writeStream.on('finish', () => {
-        resolve(copiedBytes - startOffset)
-      })
-
-      readStream.on('error', (error) => {
-        writeStream.destroy()
-        reject(error)
-      })
-
-      writeStream.on('error', (error) => {
-        readStream.destroy()
-        reject(error)
-      })
-
-      readStream.pipe(writeStream)
-    })
   }
 
   // Helper method to format bytes to human readable format

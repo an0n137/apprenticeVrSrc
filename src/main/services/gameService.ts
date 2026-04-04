@@ -1,5 +1,5 @@
 import { join } from 'path'
-import { promises as fs, readFileSync } from 'fs'
+import { promises as fs, readdirSync } from 'fs'
 import { execa } from 'execa'
 import { app, BrowserWindow, dialog, shell } from 'electron'
 import { existsSync } from 'fs'
@@ -603,6 +603,15 @@ class GameService extends EventEmitter implements GamesAPI {
     const releaseNameIndex = columns.indexOf('Release Name')
     const downloadsIndex = columns.indexOf('Downloads')
 
+    // Batch-read thumbnail directory once instead of 2600+ existsSync calls
+    const thumbnailDir = join(this.metaPath, 'thumbnails')
+    let thumbnailSet: Set<string>
+    try {
+      thumbnailSet = new Set(readdirSync(thumbnailDir))
+    } catch {
+      thumbnailSet = new Set()
+    }
+
     // Process data lines (skip header)
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i].trim()
@@ -641,11 +650,12 @@ class GameService extends EventEmitter implements GamesAPI {
         }
 
         // Generate thumbnail path if the package name is available
+        const thumbnailFile = `${packageName}.jpg`
         const thumbnailPath = packageName
-          ? join(this.metaPath, 'thumbnails', `${packageName}.jpg`)
+          ? join(this.metaPath, 'thumbnails', thumbnailFile)
           : ''
 
-        const thumbnailExists = existsSync(thumbnailPath)
+        const thumbnailExists = packageName ? thumbnailSet.has(thumbnailFile) : false
 
         // Generate note path based on release name
         const notePath = releaseName ? join(this.metaPath, 'notes', `${releaseName}.txt`) : ''
@@ -704,10 +714,13 @@ class GameService extends EventEmitter implements GamesAPI {
     })
   }
 
-  getNote(releaseName: string): Promise<string> {
+  async getNote(releaseName: string): Promise<string> {
     const notePath = join(this.metaPath, 'notes', `${releaseName}.txt`)
-    const noteExists = existsSync(notePath)
-    return Promise.resolve(noteExists ? readFileSync(notePath, 'utf-8') : '')
+    try {
+      return await fs.readFile(notePath, 'utf-8')
+    } catch {
+      return ''
+    }
   }
 
   async getTrailerVideoId(gameName: string): Promise<string | null> {

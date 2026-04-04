@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, protocol, dialog, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, protocol, dialog, ipcMain, session } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -65,9 +65,44 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
-      webSecurity: false // Allow loading local resources (thumbnails)
+      webSecurity: false, // Allow loading local resources (thumbnails)
+      webviewTag: true // Enable <webview> for YouTube trailer embedding
     }
   })
+
+  // Set up a dedicated session partition for YouTube webview embeds.
+  // The webview runs in its own process where window.top === window,
+  // so YouTube's client-side embed origin checks don't trigger.
+  // We set a Chrome user-agent so YouTube doesn't detect Electron.
+  const ytUrlFilters = [
+    'https://*.youtube.com/*',
+    'https://*.youtube-nocookie.com/*',
+    'https://*.googlevideo.com/*',
+    'https://*.ytimg.com/*'
+  ]
+  const ytSession = session.fromPartition('persist:youtube')
+  ytSession.setUserAgent(
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  )
+  ytSession.webRequest.onBeforeSendHeaders(
+    { urls: ytUrlFilters },
+    (details, callback) => {
+      details.requestHeaders['Referer'] = 'https://www.youtube.com/'
+      details.requestHeaders['Origin'] = 'https://www.youtube.com'
+      callback({ requestHeaders: details.requestHeaders })
+    }
+  )
+  ytSession.webRequest.onHeadersReceived(
+    { urls: ytUrlFilters },
+    (details, callback) => {
+      const headers = { ...details.responseHeaders }
+      delete headers['X-Frame-Options']
+      delete headers['x-frame-options']
+      delete headers['Content-Security-Policy']
+      delete headers['content-security-policy']
+      callback({ responseHeaders: headers })
+    }
+  )
 
   // Explicitly set minimum size to ensure constraint is enforced
   mainWindow.setMinimumSize(1200, 900)

@@ -264,6 +264,18 @@ const GamesView: React.FC<GamesViewProps> = ({ onBackToDevices }) => {
   const styles = useStyles()
 
   const [globalFilter, setGlobalFilter] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const handleSearchChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const val = String(e.target.value)
+      setSearchInput(val)
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current)
+      searchTimerRef.current = setTimeout(() => setGlobalFilter(val), 400)
+    },
+    []
+  )
   const [sorting, setSorting] = useState<SortingState>([])
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
   const [activeFilter, setActiveFilter] = useState<FilterType>('all')
@@ -326,22 +338,29 @@ const GamesView: React.FC<GamesViewProps> = ({ onBackToDevices }) => {
     return () => {
       unsubscribe()
     }
-  }, [selectedDevice, loadPackages, games])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDevice, loadPackages])
 
   const downloadStatusMap = useMemo(() => {
-    const map = new Map<string, { status: string; progress: number }>()
+    const map = new Map<string, { status: string; progress: number; speed?: string; eta?: string }>()
     downloadQueue.forEach((item) => {
       if (item.releaseName) {
         const progress =
           item.status === 'Extracting' ? (item.extractProgress ?? 0) : (item.progress ?? 0)
         map.set(item.releaseName, {
           status: item.status,
-          progress: progress
+          progress: progress,
+          speed: item.speed,
+          eta: item.eta
         })
       }
     })
     return map
   }, [downloadQueue])
+
+  // Ref so column cell renderers always read the latest map without re-creating column defs
+  const downloadStatusMapRef = useRef(downloadStatusMap)
+  downloadStatusMapRef.current = downloadStatusMap
 
   useEffect(() => {
     if (!tableContainerRef.current) return
@@ -368,15 +387,8 @@ const GamesView: React.FC<GamesViewProps> = ({ onBackToDevices }) => {
     })
     resizeObserver.observe(currentRef)
 
-    // Also listen for window resize as a fallback
-    const handleResize = (): void => {
-      window.requestAnimationFrame(updateTableWidth)
-    }
-    window.addEventListener('resize', handleResize)
-
     return () => {
       resizeObserver.unobserve(currentRef)
-      window.removeEventListener('resize', handleResize)
     }
   }, [])
 
@@ -397,7 +409,7 @@ const GamesView: React.FC<GamesViewProps> = ({ onBackToDevices }) => {
         cell: ({ row }) => {
           const game = row.original
           const downloadInfo = game.releaseName
-            ? downloadStatusMap.get(game.releaseName)
+            ? downloadStatusMapRef.current.get(game.releaseName)
             : undefined
           const isDownloaded = downloadInfo?.status === 'Completed'
           const isInstalled = game.isInstalled
@@ -459,7 +471,7 @@ const GamesView: React.FC<GamesViewProps> = ({ onBackToDevices }) => {
         cell: ({ row }) => {
           const game = row.original
           const downloadInfo = game.releaseName
-            ? downloadStatusMap.get(game.releaseName)
+            ? downloadStatusMapRef.current.get(game.releaseName)
             : undefined
           const isDownloading = downloadInfo?.status === 'Downloading'
           const isExtracting = downloadInfo?.status === 'Extracting'
@@ -502,8 +514,13 @@ const GamesView: React.FC<GamesViewProps> = ({ onBackToDevices }) => {
                   >
                     <Spinner size="tiny" aria-label="Installing" />
                     <Badge shape="rounded" color="brand" appearance="outline">
-                      {downloadInfo?.status}
+                      {downloadInfo?.status}{isDownloading && downloadInfo?.progress != null ? ` ${downloadInfo.progress}%` : ''}
                     </Badge>
+                    {isDownloading && downloadInfo?.speed && (
+                      <span style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
+                        {downloadInfo.speed}
+                      </span>
+                    )}
                   </div>
                 )}
                 {isInstallError && (
@@ -584,7 +601,8 @@ const GamesView: React.FC<GamesViewProps> = ({ onBackToDevices }) => {
         enableResizing: false
       }
     ]
-  }, [downloadStatusMap, styles, tableWidth])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [styles, tableWidth])
 
   const table = useReactTable({
     data: games,
@@ -1311,8 +1329,8 @@ const GamesView: React.FC<GamesViewProps> = ({ onBackToDevices }) => {
         <div className="games-toolbar-right">
           <span className="game-count">{table.getFilteredRowModel().rows.length} displayed</span>
           <Input
-            value={globalFilter ?? ''}
-            onChange={(e) => setGlobalFilter(String(e.target.value))}
+            value={searchInput}
+            onChange={handleSearchChange}
             placeholder="Search name/package..."
             type="search"
           />

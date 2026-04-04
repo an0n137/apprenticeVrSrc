@@ -1,4 +1,4 @@
-import React, { useEffect, useState, ReactNode, useCallback } from 'react'
+import React, { useEffect, useState, ReactNode, useCallback, useMemo, useRef } from 'react'
 import {
   DeviceInfo,
   PackageInfo,
@@ -27,6 +27,12 @@ export const AdbProvider: React.FC<AdbProviderProps> = ({ children }) => {
   const { isReady } = useDependency()
   // const [isInitialLoadComplete, setIsInitialLoadComplete] = useState<boolean>(false)
   const selectedDeviceDetails = devices.find((device) => device.id === selectedDevice) ?? null
+
+  // Ref to access current selectedDevice inside stable effect callbacks without re-registering listeners
+  const selectedDeviceRef = useRef(selectedDevice)
+  useEffect(() => {
+    selectedDeviceRef.current = selectedDevice
+  }, [selectedDevice])
 
   // Helper function to merge a device with bookmarks
   const mergeDeviceWithBookmarks = useCallback(
@@ -123,7 +129,7 @@ export const AdbProvider: React.FC<AdbProviderProps> = ({ children }) => {
       })
 
       // If currently selected device was removed, reset the connection
-      if (selectedDevice === device.id) {
+      if (selectedDeviceRef.current === device.id) {
         setSelectedDevice(null)
         setIsConnected(false)
         setPackages([]) // Clear packages when device is removed
@@ -137,7 +143,7 @@ export const AdbProvider: React.FC<AdbProviderProps> = ({ children }) => {
 
       // Check if the changed device is the currently selected device and is going offline
       if (
-        selectedDevice === device.id &&
+        selectedDeviceRef.current === device.id &&
         (device.type === 'offline' || device.type === 'unauthorized')
       ) {
         console.log(
@@ -223,7 +229,7 @@ export const AdbProvider: React.FC<AdbProviderProps> = ({ children }) => {
       removeTrackerError()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDevice, isReady, mergeDeviceWithBookmarks])
+  }, [isReady, mergeDeviceWithBookmarks])
 
   // Load installed packages from connected device
   const loadPackages = useCallback(async (): Promise<void> => {
@@ -654,27 +660,31 @@ export const AdbProvider: React.FC<AdbProviderProps> = ({ children }) => {
     []
   )
 
-  const value = {
-    devices,
-    selectedDevice,
-    isConnected,
-    isLoading,
-    error,
-    packages,
-    loadingPackages,
-    userName,
-    loadingUserName,
-    connectToDevice,
-    connectTcpDevice,
-    disconnectTcpDevice,
-    refreshDevices,
-    disconnectDevice,
-    loadPackages,
-    selectedDeviceDetails,
-    getUserName,
-    setUserName,
-    pingDevice
-  } satisfies AdbContextType
+  const value = useMemo<AdbContextType>(
+    () => ({
+      devices,
+      selectedDevice,
+      isConnected,
+      isLoading,
+      error,
+      packages,
+      loadingPackages,
+      userName,
+      loadingUserName,
+      connectToDevice,
+      connectTcpDevice,
+      disconnectTcpDevice,
+      refreshDevices,
+      disconnectDevice,
+      loadPackages,
+      selectedDeviceDetails,
+      getUserName,
+      setUserName,
+      pingDevice
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [devices, selectedDevice, isConnected, isLoading, error, packages, loadingPackages, userName, loadingUserName, selectedDeviceDetails, loadPackages, getUserName, setUserName, pingDevice]
+  )
 
   // if (!isInitialLoadComplete) {
   //   return <div>Loading...</div>

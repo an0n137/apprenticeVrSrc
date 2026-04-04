@@ -19,7 +19,8 @@ interface VrpConfig {
 class DownloadService extends EventEmitter implements DownloadAPI {
   private downloadsPath: string
   private isInitialized = false
-  private isProcessing = false
+  private activeCount = 0
+  private maxConcurrent = 3
   private debouncedEmitUpdate: () => void
   private queueManager: QueueManager
   private downloadProcessor: DownloadProcessor
@@ -39,7 +40,7 @@ class DownloadService extends EventEmitter implements DownloadAPI {
 
     this.queueManager = new QueueManager()
     this.adbService = adbService
-    this.debouncedEmitUpdate = debounce(this.emitUpdate.bind(this), 100)
+    this.debouncedEmitUpdate = debounce(this.emitUpdate.bind(this), 300)
     this.downloadProcessor = new DownloadProcessor(this.queueManager, this.debouncedEmitUpdate)
     this.extractionProcessor = new ExtractionProcessor(this.queueManager, this.debouncedEmitUpdate)
     this.installationProcessor = new InstallationProcessor(
@@ -192,47 +193,39 @@ class DownloadService extends EventEmitter implements DownloadAPI {
   }
 
   private async processQueue(): Promise<void> {
-    if (this.isProcessing) {
-      // Safety check: if isProcessing is true but no active downloads/extractions exist,
-      // it might be stuck due to a race condition or error. Reset it.
-      const activeItems = this.queueManager
-        .getQueue()
-        .filter(
-          (item) =>
-            this.downloadProcessor.isDownloadActive(item.releaseName) ||
-            this.extractionProcessor.isExtractionActive(item.releaseName)
-        )
-
-      console.log(
-        `[Service ProcessQueue] isProcessing=true, checking active operations:`,
-        activeItems.map((item) => `${item.releaseName}(${item.status})`)
-      )
-
-      if (activeItems.length === 0) {
-        console.warn(
-          '[Service ProcessQueue] isProcessing was stuck with no active operations, resetting it'
-        )
-        this.isProcessing = false
-      } else {
-        console.log(
-          `[Service ProcessQueue] Found ${activeItems.length} active operations, staying in processing mode`
-        )
+    // Launch as many concurrent pipelines as allowed
+    while (this.activeCount < this.maxConcurrent) {
+      const nextItem = this.queueManager.findNextQueuedItem()
+      if (!nextItem) {
+        if (this.activeCount === 0) {
+          console.log('[Service ProcessQueue] No queued items and no active operations')
+        }
         return
       }
+
+      // CRITICAL: Change status from 'Queued' IMMEDIATELY before the async pipeline starts,
+      // so the next loop iteration of findNextQueuedItem() won't pick the same item again.
+      this.queueManager.updateItem(nextItem.releaseName, { status: 'Downloading', progress: 0 })
+
+      // Mark as active immediately so the next loop iteration won't pick it again
+      this.activeCount++
+      console.log(
+        `[Service ProcessQueue] Processing: ${nextItem.releaseName} (active: ${this.activeCount}/${this.maxConcurrent})`
+      )
+
+      // Fire off the pipeline without awaiting — runs concurrently
+      this.runPipeline(nextItem).finally(() => {
+        this.activeCount--
+        console.log(
+          `[Service ProcessQueue] Finished pipeline for ${nextItem.releaseName} (active: ${this.activeCount}/${this.maxConcurrent})`
+        )
+        // Try to fill the freed slot
+        this.processQueue()
+      })
     }
+  }
 
-    const nextItem = this.queueManager.findNextQueuedItem()
-    if (!nextItem) {
-      this.isProcessing = false
-      console.log('[Service ProcessQueue] No queued items found, setting isProcessing=false')
-      return
-    }
-
-    this.isProcessing = true
-    console.log(
-      `[Service ProcessQueue] Processing next item: ${nextItem.releaseName}, setting isProcessing=true`
-    )
-
+  private async runPipeline(nextItem: DownloadItem): Promise<void> {
     const targetDeviceId = this.getTargetDeviceForInstallation()
 
     try {
@@ -241,8 +234,6 @@ class DownloadService extends EventEmitter implements DownloadAPI {
         console.log(
           `[Service ProcessQueue] Download failed/cancelled for ${nextItem.releaseName}. Status: ${downloadResult.finalState?.status}`
         )
-        this.isProcessing = false
-        this.processQueue()
         return
       }
       const itemAfterDownload = downloadResult.finalState
@@ -250,16 +241,12 @@ class DownloadService extends EventEmitter implements DownloadAPI {
         console.log(
           `[Service ProcessQueue] Download successful but no final state for ${nextItem.releaseName}.`
         )
-        this.isProcessing = false
-        this.processQueue()
         return
       }
       if (!downloadResult.startExtraction) {
         console.log(
           `[Service ProcessQueue] Download successful but extraction flag not set for ${nextItem.releaseName}.`
         )
-        this.isProcessing = false
-        this.processQueue()
         return
       }
 
@@ -271,8 +258,6 @@ class DownloadService extends EventEmitter implements DownloadAPI {
         console.log(
           `[Service ProcessQueue] Extraction failed or was cancelled for ${itemAfterDownload.releaseName}.`
         )
-        this.isProcessing = false
-        this.processQueue()
         return
       }
       const itemAfterExtraction = this.queueManager.findItem(itemAfterDownload.releaseName)
@@ -280,8 +265,6 @@ class DownloadService extends EventEmitter implements DownloadAPI {
         console.warn(
           `[Service ProcessQueue] Extraction reported success for ${itemAfterDownload.releaseName}, but item status is now ${itemAfterExtraction?.status}. Skipping installation.`
         )
-        this.isProcessing = false
-        this.processQueue()
         return
       }
 
@@ -291,9 +274,6 @@ class DownloadService extends EventEmitter implements DownloadAPI {
         console.warn(
           `[Service ProcessQueue] Extraction successful for ${itemAfterExtraction.releaseName}, but app is no longer connected to a device. Skipping installation.`
         )
-        // Mark as Completed (download/extract), installation skipped.
-        this.isProcessing = false
-        this.processQueue()
         return
       }
 
@@ -301,30 +281,29 @@ class DownloadService extends EventEmitter implements DownloadAPI {
         console.warn(
           `[Service ProcessQueue] Target device changed during processing. Was: ${targetDeviceId}, Now: ${finalTargetDeviceId}. Skipping installation.`
         )
-        this.isProcessing = false
-        this.processQueue()
         return
       }
 
       console.log(
-        `[Service ProcessQueue] Extraction successful for ${itemAfterExtraction.releaseName}. Starting installation on ${finalTargetDeviceId}...`
+        `[Service ProcessQueue] Extraction successful for ${itemAfterExtraction.releaseName}. Queuing installation on ${finalTargetDeviceId}...`
       )
+      const installStartTime = Date.now()
       const installationSuccess = await this.installationProcessor.startInstallation(
         itemAfterExtraction,
         finalTargetDeviceId
       )
+      const installDuration = ((Date.now() - installStartTime) / 1000).toFixed(1)
       if (installationSuccess) {
+        console.log(
+          `[Service ProcessQueue] Installation completed for ${itemAfterExtraction.releaseName} in ${installDuration}s`
+        )
         // Emit event on successful installation
         this.emit('installation:success', finalTargetDeviceId)
       } else {
-        // Error is already logged by the installation processor
         console.error(
-          `[Service ProcessQueue] Installation failed for ${itemAfterExtraction.releaseName}.`
+          `[Service ProcessQueue] Installation failed for ${itemAfterExtraction.releaseName} after ${installDuration}s`
         )
-      } // No need for specific success log here, handled by processor
-
-      this.isProcessing = false
-      this.processQueue()
+      }
     } catch (error) {
       console.error(
         `[Service ProcessQueue] UNEXPECTED error in main processing loop for ${nextItem.releaseName}:`,
@@ -340,8 +319,96 @@ class DownloadService extends EventEmitter implements DownloadAPI {
         undefined,
         currentItem?.extractProgress
       )
-      this.isProcessing = false
-      this.processQueue()
+    }
+  }
+
+  // Resume pipeline: same as runPipeline but uses resumeDownload instead of startDownload
+  private async runResumePipeline(nextItem: DownloadItem): Promise<void> {
+    const targetDeviceId = this.getTargetDeviceForInstallation()
+
+    try {
+      const downloadResult = await this.downloadProcessor.resumeDownload(nextItem)
+      if (!downloadResult.success) {
+        console.log(
+          `[Service ResumeQueue] Download failed/cancelled for ${nextItem.releaseName}. Status: ${downloadResult.finalState?.status}`
+        )
+        return
+      }
+      const itemAfterDownload = downloadResult.finalState
+      if (!itemAfterDownload || !downloadResult.startExtraction) {
+        console.log(
+          `[Service ResumeQueue] Download done but extraction not needed for ${nextItem.releaseName}.`
+        )
+        return
+      }
+
+      console.log(
+        `[Service ResumeQueue] Download successful for ${itemAfterDownload.releaseName}. Starting extraction...`
+      )
+      const extractionSuccess = await this.extractionProcessor.startExtraction(itemAfterDownload)
+      if (!extractionSuccess) {
+        console.log(
+          `[Service ResumeQueue] Extraction failed or was cancelled for ${itemAfterDownload.releaseName}.`
+        )
+        return
+      }
+      const itemAfterExtraction = this.queueManager.findItem(itemAfterDownload.releaseName)
+      if (!itemAfterExtraction || itemAfterExtraction.status !== 'Completed') {
+        console.warn(
+          `[Service ResumeQueue] Extraction reported success but status is ${itemAfterExtraction?.status}. Skipping installation.`
+        )
+        return
+      }
+
+      const finalTargetDeviceId = this.getTargetDeviceForInstallation()
+      if (!finalTargetDeviceId) {
+        console.warn(
+          `[Service ResumeQueue] No connected device after extraction for ${itemAfterExtraction.releaseName}. Skipping installation.`
+        )
+        return
+      }
+
+      if (targetDeviceId && targetDeviceId !== finalTargetDeviceId) {
+        console.warn(
+          `[Service ResumeQueue] Target device changed. Skipping installation for ${itemAfterExtraction.releaseName}.`
+        )
+        return
+      }
+
+      console.log(
+        `[Service ResumeQueue] Starting installation for ${itemAfterExtraction.releaseName} on ${finalTargetDeviceId}...`
+      )
+      const installStartTime = Date.now()
+      const installationSuccess = await this.installationProcessor.startInstallation(
+        itemAfterExtraction,
+        finalTargetDeviceId
+      )
+      const installDuration = ((Date.now() - installStartTime) / 1000).toFixed(1)
+      if (installationSuccess) {
+        console.log(
+          `[Service ResumeQueue] Installation completed for ${itemAfterExtraction.releaseName} in ${installDuration}s`
+        )
+        this.emit('installation:success', finalTargetDeviceId)
+      } else {
+        console.error(
+          `[Service ResumeQueue] Installation failed for ${itemAfterExtraction.releaseName} after ${installDuration}s`
+        )
+      }
+    } catch (error) {
+      console.error(
+        `[Service ResumeQueue] UNEXPECTED error for ${nextItem.releaseName}:`,
+        error
+      )
+      const currentItem = this.queueManager.findItem(nextItem.releaseName)
+      this.updateItemStatus(
+        nextItem.releaseName,
+        'Error',
+        currentItem?.progress ?? 0,
+        'Unexpected processing error',
+        undefined,
+        undefined,
+        currentItem?.extractProgress
+      )
     }
   }
 
@@ -399,35 +466,12 @@ class DownloadService extends EventEmitter implements DownloadAPI {
     }
 
     console.log(
-      `[Service cancelUserRequest] User requesting cancel for ${releaseName}, status: ${item.status}, isProcessing: ${this.isProcessing}`
+      `[Service cancelUserRequest] User requesting cancel for ${releaseName}, status: ${item.status}, active: ${this.activeCount}`
     )
 
     if (item.status === 'Downloading' || item.status === 'Queued') {
       this.downloadProcessor.cancelDownload(releaseName, 'Cancelled')
-
-      // Only reset isProcessing if this was the only active operation
-      if (this.isProcessing) {
-        const allItems = this.queueManager.getQueue()
-        const otherActiveOperations = allItems.filter(
-          (queueItem) =>
-            queueItem.releaseName !== releaseName &&
-            (this.downloadProcessor.isDownloadActive(queueItem.releaseName) ||
-              this.extractionProcessor.isExtractionActive(queueItem.releaseName))
-        )
-
-        if (otherActiveOperations.length === 0) {
-          console.log(
-            `[Service cancelUserRequest] Resetting isProcessing flag - no other active operations after cancelling ${releaseName}`
-          )
-          this.isProcessing = false
-          // Continue processing the queue for other items
-          this.processQueue()
-        } else {
-          console.log(
-            `[Service cancelUserRequest] Not resetting isProcessing flag - ${otherActiveOperations.length} other operations are still active`
-          )
-        }
-      }
+      // The pipeline's .finally() will decrement activeCount and call processQueue()
     } else if (item.status === 'Extracting') {
       this.extractionProcessor.cancelExtraction(releaseName)
       const updated = this.queueManager.updateItem(releaseName, {
@@ -437,30 +481,7 @@ class DownloadService extends EventEmitter implements DownloadAPI {
         error: undefined
       })
       if (updated) this.debouncedEmitUpdate()
-
-      // Only reset isProcessing if this was the only active operation
-      if (this.isProcessing) {
-        const allItems = this.queueManager.getQueue()
-        const otherActiveOperations = allItems.filter(
-          (queueItem) =>
-            queueItem.releaseName !== releaseName &&
-            (this.downloadProcessor.isDownloadActive(queueItem.releaseName) ||
-              this.extractionProcessor.isExtractionActive(queueItem.releaseName))
-        )
-
-        if (otherActiveOperations.length === 0) {
-          console.log(
-            `[Service cancelUserRequest] Resetting isProcessing flag - no other active operations after cancelling extraction of ${releaseName}`
-          )
-          this.isProcessing = false
-          // Continue processing the queue for other items
-          this.processQueue()
-        } else {
-          console.log(
-            `[Service cancelUserRequest] Not resetting isProcessing flag - ${otherActiveOperations.length} other operations are still active`
-          )
-        }
-      }
+      // The pipeline's .finally() will decrement activeCount and call processQueue()
     } else if (item.status === 'Installing') {
       console.warn(
         `[Service cancelUserRequest] Cancellation requested for ${releaseName} during 'Installing' state - Not supported.`
@@ -526,9 +547,22 @@ class DownloadService extends EventEmitter implements DownloadAPI {
 
   public resumeDownload(releaseName: string): void {
     const item = this.queueManager.findItem(releaseName)
-    if (item) {
-      this.downloadProcessor.resumeDownload(item)
-    }
+    if (!item) return
+
+    // Track as active pipeline so concurrent limits are respected
+    this.activeCount++
+    console.log(
+      `[Service] Resuming pipeline for ${releaseName} (active: ${this.activeCount}/${this.maxConcurrent})`
+    )
+
+    // Run the full pipeline (download → extraction → installation) via resume path
+    this.runResumePipeline(item).finally(() => {
+      this.activeCount--
+      console.log(
+        `[Service] Finished resume pipeline for ${releaseName} (active: ${this.activeCount}/${this.maxConcurrent})`
+      )
+      this.processQueue()
+    })
   }
 
   public async deleteDownloadedFiles(releaseName: string): Promise<boolean> {
@@ -591,9 +625,9 @@ class DownloadService extends EventEmitter implements DownloadAPI {
       throw new Error(`Item ${releaseName} is not in 'Completed' state.`)
     }
 
-    if (this.isProcessing) {
+    if (this.activeCount >= this.maxConcurrent) {
       console.warn(
-        `[Service installFromCompleted] Queue is already processing. Installation for ${releaseName} will be handled if it becomes the next item.`
+        `[Service installFromCompleted] Queue is at max concurrency (${this.activeCount}/${this.maxConcurrent}). Installation for ${releaseName} will be handled when a slot opens.`
       )
       // Optionally, we could queue this specific action, but for now, let the main loop handle it
       // Or force a status change back to Queued? Seems counter-intuitive.

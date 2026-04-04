@@ -4,6 +4,8 @@
 
 ApprenticeVR: VRSrc Edition is a modern, cross-platform desktop application built with Electron, React, and TypeScript, designed for managing and sideloading content onto Meta Quest devices. It aims to provide a user-friendly and feature-rich alternative to existing sideloading tools.
 
+> **Fork note:** This fork contains bug fixes, performance improvements, and a major build size reduction. See [Changelog](#changelog) below.
+
 ## Server Configuration (Required on First Run)
 
 You must provide your own `ServerInfo.json` configuration file.
@@ -24,13 +26,13 @@ Create or edit the file with the following format:
 
 **IMPORTANT:** The `ServerInfo.json` file **must** use Linux/LF line endings (`\n`), **not** Windows/CRLF line endings (`\r\n`). This applies to **all platforms** (Windows, macOS, and Linux). Most modern text editors (VS Code, Notepad++, Sublime Text) can set line endings — make sure it is set to `LF` before saving. If the app fails to read your credentials, incorrect line endings are the most common cause.
 
-Then restart the app. If credentials change in the future, just update this file -- no rebuild needed.
+Then restart the app. If credentials change in the future, just update this file — no rebuild needed.
 
 ## Building for Release
 
 ### Prerequisites
 
-*   [Node.js](https://nodejs.org/) (which includes npm)
+* [Node.js](https://nodejs.org/) (which includes npm)
 
 ### Install Dependencies
 
@@ -72,6 +74,54 @@ npm run build:linux:arm64
 ```
 
 Build output goes to the `dist/` directory.
+
+---
+
+## Changelog
+
+### 1. YouTube Trailer Embed Fix
+Replaced broken `<iframe>` embeds (Error 153/152) with Electron `<webview>` tag running in an isolated process. YouTube's client-side embed detection no longer triggers because `window.top === window` inside a webview. Uses a dedicated `persist:youtube` session with spoofed headers, CSS injection to hide YouTube UI, and auto-play. Added a "Watch on YouTube" external link as a fast fallback.
+
+### 2. Concurrent Downloads (5 Parallel Pipelines)
+Replaced the serial single-download queue with a concurrent pipeline system. Up to 5 downloads run in parallel with automatic slot filling as pipelines complete.
+
+### 3. rclone copy Download Method (No macFUSE/WinFsp Required)
+Replaced `rclone mount` with `rclone copy` as the sole download method. Eliminates the macFUSE and WinFsp OS-level dependency requirements. Works out of the box on all platforms with just the bundled rclone binary. Removed ~500 lines of dead mount-based code.
+
+### 4. Pause/Resume Download Buttons
+Added Pause (⏸) and Resume (▶) buttons to the downloads sidebar. Pause kills the rclone process; resume auto-continues from partial files via `--partial-suffix .partial`.
+
+### 5. Serialized Installation Queue
+Added a promise-based mutex so only one `adb install` runs at a time, preventing ADB conflicts when multiple concurrent downloads finish simultaneously.
+
+### 6. Renderer Performance Optimizations
+- Memoized all 4 context provider `value` props to stop cascading re-renders
+- Stabilized AdbProvider device tracking effect (register listeners once, not on every device selection)
+- Increased download IPC debounce from 100ms to 300ms
+- Stabilized GamesView column definitions via `useRef` to prevent TanStack Table recomputations
+- Removed redundant resize listener (ResizeObserver already handled it)
+
+### 7. Download Progress & Speed Display
+Fixed progress stuck at 0% by adding fallback calculation from rclone's per-transfer stats. Added speed and ETA display to the download badge.
+
+### 8. Game List Performance (2600+ Games)
+- Batch filesystem I/O: single `readdirSync` + `Set` instead of 2600 individual `existsSync` calls
+- O(n²) → O(n+m) enrichment via `Map` lookup
+- Deferred upload candidate check
+- 200ms search debounce
+- Async `getNote()` to avoid blocking the main thread
+
+### 9. Resume Pipeline Fix (Extraction Never Started)
+`resumeDownload()` was fire-and-forget — the download→extract→install chain was never triggered. Created `runResumePipeline()` that properly awaits and chains all stages with `activeCount` tracking.
+
+### 10. Download Path Doubling Fix
+`startRcloneCopyDownload()` appended `releaseName` to `downloadPath` on every call, doubling the path on resume. Fixed with an idempotent `.endsWith()` check.
+
+### 11. Resume Progress Tracking
+On resume, measures already-downloaded bytes on disk as a baseline. Progress calculation accounts for baseline so it starts near the paused percentage instead of 0%.
+
+### 12. Build Size Reduction (478MB → 110MB DMG)
+Moved 5 renderer-only deps (`@fluentui/*`, `@tanstack/*`, `date-fns`) to `devDependencies` — Vite already bundles them. Removed 12 completely unused deps. Added file exclusions for non-code files. Result: 77% smaller DMG, 93% smaller asar (208MB → 15MB).
 
 ---
 

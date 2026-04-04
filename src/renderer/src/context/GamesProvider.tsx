@@ -73,8 +73,19 @@ export const GamesProvider: React.FC<GamesProviderProps> = ({ children }) => {
 
     const candidates: UploadCandidate[] = []
 
-    // Check for missing games and newer versions of games
+    // Build a Map for O(1) package lookups instead of O(n) .filter() per package
     const allGamePackages = new Set(rawGames.map((game) => game.packageName))
+    const rawGamesMap = new Map<string, GameInfo[]>()
+    for (const game of rawGames) {
+      if (game.packageName) {
+        const existing = rawGamesMap.get(game.packageName)
+        if (existing) {
+          existing.push(game)
+        } else {
+          rawGamesMap.set(game.packageName, [game])
+        }
+      }
+    }
 
     // Process installed packages and filter by blacklist
     const processInstalledPackages = async (): Promise<void> => {
@@ -102,9 +113,7 @@ export const GamesProvider: React.FC<GamesProviderProps> = ({ children }) => {
           })
         } else {
           // Check if the local version is newer than ALL store versions with the same package name
-          const storeGamesWithSamePackage = rawGames.filter(
-            (game) => game.packageName === pkg.packageName
-          )
+          const storeGamesWithSamePackage = rawGamesMap.get(pkg.packageName) || []
 
           if (storeGamesWithSamePackage.length > 0) {
             // Check if installed version is newer than ALL versions in the store
@@ -142,9 +151,10 @@ export const GamesProvider: React.FC<GamesProviderProps> = ({ children }) => {
     processInstalledPackages()
   }, [isDeviceConnected, installedPackages, rawGames, selectedDeviceDetails, selectedDevice])
 
-  // Check for upload candidates whenever device versions or game data changes
+  // Check for upload candidates whenever device versions or game data changes (deferred)
   useEffect(() => {
-    checkForUploadCandidates()
+    const timer = setTimeout(() => checkForUploadCandidates(), 500)
+    return () => clearTimeout(timer)
   }, [installedPackages, rawGames, checkForUploadCandidates])
 
   // Clear upload candidates when device disconnects
@@ -156,24 +166,21 @@ export const GamesProvider: React.FC<GamesProviderProps> = ({ children }) => {
 
   // enrich the games with the installed packages and the device version codes
   const games = useMemo((): GameInfo[] => {
-    const installedSet = new Set(installedPackages.map((pkg) => pkg.packageName))
+    // Build a Map for O(1) lookups instead of O(n) .find() per game
+    const installedMap = new Map(
+      installedPackages.map((pkg) => [pkg.packageName, pkg.versionCode])
+    )
 
     return rawGames.map((game) => {
-      const isInstalled = game.packageName ? installedSet.has(game.packageName) : false
-      let deviceVersionCode: number | undefined = undefined
+      const deviceVersionCode = game.packageName
+        ? installedMap.get(game.packageName)
+        : undefined
+      const isInstalled = deviceVersionCode !== undefined
       let hasUpdate = false
 
-      if (
-        isInstalled &&
-        game.packageName &&
-        installedPackages.find((pkg) => pkg.packageName === game.packageName)
-      ) {
-        deviceVersionCode = installedPackages.find(
-          (pkg) => pkg.packageName === game.packageName
-        )?.versionCode
+      if (isInstalled && deviceVersionCode !== undefined) {
         const listVersionNumeric = parseVersion(game.version)
-
-        if (listVersionNumeric !== null && deviceVersionCode !== undefined) {
+        if (listVersionNumeric !== null) {
           hasUpdate = listVersionNumeric > deviceVersionCode
         }
       }
@@ -287,26 +294,48 @@ export const GamesProvider: React.FC<GamesProviderProps> = ({ children }) => {
     return await window.api.games.getNote(releaseName)
   }, [])
 
-  const value = {
-    games,
-    localGames,
-    isLoading,
-    error,
-    lastSyncTime,
-    downloadProgress,
-    extractProgress,
-    refreshGames,
-    loadGames,
-    getNote,
-    isInitialLoadComplete,
-    outdatedGames,
-    missingGames,
-    uploadCandidates,
-    getTrailerVideoId,
-    addGameToBlacklist,
-    getBlacklistGames,
-    removeGameFromBlacklist
-  }
+  const value = useMemo(
+    () => ({
+      games,
+      localGames,
+      isLoading,
+      error,
+      lastSyncTime,
+      downloadProgress,
+      extractProgress,
+      refreshGames,
+      loadGames,
+      getNote,
+      isInitialLoadComplete,
+      outdatedGames,
+      missingGames,
+      uploadCandidates,
+      getTrailerVideoId,
+      addGameToBlacklist,
+      getBlacklistGames,
+      removeGameFromBlacklist
+    }),
+    [
+      games,
+      localGames,
+      isLoading,
+      error,
+      lastSyncTime,
+      downloadProgress,
+      extractProgress,
+      refreshGames,
+      loadGames,
+      getNote,
+      isInitialLoadComplete,
+      outdatedGames,
+      missingGames,
+      uploadCandidates,
+      getTrailerVideoId,
+      addGameToBlacklist,
+      getBlacklistGames,
+      removeGameFromBlacklist
+    ]
+  )
 
   return <GamesContext.Provider value={value}>{children}</GamesContext.Provider>
 }

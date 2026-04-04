@@ -1,4 +1,4 @@
-import React, { ReactNode, useEffect, useState, useCallback } from 'react'
+import React, { ReactNode, useEffect, useState, useCallback, useMemo } from 'react'
 import { UploadContext, UploadContextType } from './UploadContext'
 import { UploadItem, UploadPreparationProgress } from '@shared/types'
 
@@ -126,16 +126,19 @@ export const UploadProvider: React.FC<UploadProviderProps> = ({ children }) => {
     }
   }, [])
 
-  const value: UploadContextType = {
-    isUploading,
-    progress,
-    error,
-    queue,
-    addToQueue,
-    removeFromQueue,
-    cancelUpload,
-    prepareUpload
-  }
+  const value = useMemo<UploadContextType>(
+    () => ({
+      isUploading,
+      progress,
+      error,
+      queue,
+      addToQueue,
+      removeFromQueue,
+      cancelUpload,
+      prepareUpload
+    }),
+    [isUploading, progress, error, queue, addToQueue, removeFromQueue, cancelUpload, prepareUpload]
+  )
 
   return <UploadContext.Provider value={value}>{children}</UploadContext.Provider>
 }

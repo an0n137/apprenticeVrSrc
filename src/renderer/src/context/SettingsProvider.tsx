@@ -1,4 +1,4 @@
-import React, { ReactNode, useEffect, useState, useCallback } from 'react'
+import React, { ReactNode, useEffect, useState, useCallback, useMemo } from 'react'
 import { SettingsContext, SettingsContextType } from './SettingsContext'
 
 interface SettingsProviderProps {
@@ -119,18 +119,21 @@ export const SettingsProvider: React.FC<SettingsProviderProps> = ({ children }) 
     }
   }, [])
 
-  const value: SettingsContextType = {
-    downloadPath,
-    downloadSpeedLimit,
-    uploadSpeedLimit,
-    colorScheme,
-    isLoading,
-    error,
-    setDownloadPath,
-    setDownloadSpeedLimit,
-    setUploadSpeedLimit,
-    setColorScheme
-  }
+  const value = useMemo<SettingsContextType>(
+    () => ({
+      downloadPath,
+      downloadSpeedLimit,
+      uploadSpeedLimit,
+      colorScheme,
+      isLoading,
+      error,
+      setDownloadPath,
+      setDownloadSpeedLimit,
+      setUploadSpeedLimit,
+      setColorScheme
+    }),
+    [downloadPath, downloadSpeedLimit, uploadSpeedLimit, colorScheme, isLoading, error, setDownloadPath, setDownloadSpeedLimit, setUploadSpeedLimit, setColorScheme]
+  )
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>
 }

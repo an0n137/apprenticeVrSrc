@@ -17,7 +17,9 @@ import {
   DismissRegular as CloseIcon,
   ArrowCounterclockwiseRegular as RetryIcon,
   ArrowDownloadRegular as DownloadInstallIcon,
-  BroomRegular as UninstallIcon
+  BroomRegular as UninstallIcon,
+  PauseRegular as PauseIcon,
+  PlayRegular as ResumeIcon
 } from '@fluentui/react-icons'
 import { formatDistanceToNow } from 'date-fns'
 import placeholderImage from '../assets/images/game-placeholder.png'
@@ -92,7 +94,7 @@ interface DownloadsViewProps {
 
 const DownloadsView: React.FC<DownloadsViewProps> = ({ onClose }) => {
   const styles = useStyles()
-  const { queue, isLoading, error, removeFromQueue, cancelDownload, retryDownload } = useDownload()
+  const { queue, isLoading, error, removeFromQueue, cancelDownload, retryDownload, pauseDownload, resumeDownload } = useDownload()
   const { selectedDevice, isConnected, loadPackages } = useAdb()
   const { games } = useGames()
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -263,6 +265,12 @@ const DownloadsView: React.FC<DownloadsViewProps> = ({ onClose }) => {
                   {item.status === 'Cancelled' && (
                     <Text className={styles.statusText}>Cancelled</Text>
                   )}
+                  {item.status === 'Paused' && (
+                    <>
+                      <ProgressBar value={item.progress / 100} className={styles.progressBar} />
+                      <Text className={styles.statusText}>Paused – {item.progress}%</Text>
+                    </>
+                  )}
                   {item.status === 'Error' && (
                     <>
                       <Text className={styles.errorText}>Error</Text>
@@ -321,6 +329,30 @@ const DownloadsView: React.FC<DownloadsViewProps> = ({ onClose }) => {
                 </div>
                 {/* Actions */}
                 <div className={styles.actions}>
+                  {/* Pause Button */}
+                  {item.status === 'Downloading' && (
+                    <Button
+                      icon={<PauseIcon />}
+                      aria-label="Pause"
+                      size="small"
+                      appearance="subtle"
+                      onClick={() => pauseDownload(item.releaseName)}
+                      title="Pause download"
+                    />
+                  )}
+
+                  {/* Resume Button */}
+                  {item.status === 'Paused' && (
+                    <Button
+                      icon={<ResumeIcon />}
+                      aria-label="Resume"
+                      size="small"
+                      appearance="subtle"
+                      onClick={() => resumeDownload(item.releaseName)}
+                      title="Resume download"
+                    />
+                  )}
+
                   {/* Cancel Button */}
                   {(item.status === 'Queued' ||
                     item.status === 'Downloading' ||
@@ -353,6 +385,7 @@ const DownloadsView: React.FC<DownloadsViewProps> = ({ onClose }) => {
                   {/* Remove Button (appears when not actively downloading/extracting/installing) */}
                   {(item.status === 'Completed' ||
                     item.status === 'Cancelled' ||
+                    item.status === 'Paused' ||
                     item.status === 'Error' ||
                     item.status === 'InstallError' ||
                     item.status === 'Queued') && (
