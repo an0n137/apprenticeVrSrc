@@ -2,7 +2,7 @@
 
 ApprenticeVR is a modern, cross-platform desktop application built with Electron, React, and TypeScript, designed for managing and sideloading content onto Meta Quest devices. It aims to provide a user-friendly and feature-rich alternative to existing sideloading tools.
 
-## VRP Configuration (Required on First Run)
+## Server Configuration (Required on First Run)
 
 ApprenticeVR no longer fetches VRP credentials from a remote server. You must provide your own `vrp-public.json` configuration file.
 
@@ -19,6 +19,7 @@ Create or edit the file with the following format:
 ```json
 {"baseUri":"https://your-url-here/","password":"your-password-here"}
 ```
+NOTE: Linux line endings might be required
 
 Then restart the app. If credentials change in the future, just update this file -- no rebuild needed.
 
