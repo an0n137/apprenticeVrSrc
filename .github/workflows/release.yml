@@ -37,6 +37,7 @@ jobs:
             ~/Library/Caches/electron-builder
             ~/AppData/Local/electron/Cache
             ~/AppData/Local/electron-builder/cache
+            ~/.dmg-builder
           key: ${{ runner.os }}-electron-${{ hashFiles('**/package.json', '**/package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-electron-
@@ -68,7 +69,14 @@ jobs:
       - name: Build application
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ${{ steps.build_details.outputs.BUILD_COMMAND }}
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          for i in 1 2 3; do
+            ${{ steps.build_details.outputs.BUILD_COMMAND }} && break
+            echo "Build attempt $i failed, retrying in 15s..."
+            sleep 15
+          done
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
