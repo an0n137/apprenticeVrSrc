@@ -4,9 +4,10 @@
 
 ApprenticeVR: VRSrc Edition is a modern, cross-platform desktop application built with Electron, React, and TypeScript, designed for managing and sideloading content onto Meta Quest devices. It aims to provide a user-friendly and feature-rich alternative to existing sideloading tools.
 
-> **Fork note:** This fork contains bug fixes, performance improvements, and a major build size reduction. See [Changelog](#changelog) below.
+> ## **Fork note:** This fork contains bug fixes, performance improvements, and a major build size reduction. See [Changelog](#changelog) below.
 
 ## Downloads (v2.1.0)
+> STEP 1: Choose the correct file for your operating system.
 
 | File | Platform | Size |
 |------|----------|------|
@@ -20,7 +21,7 @@ ApprenticeVR: VRSrc Edition is a modern, cross-platform desktop application buil
 | [apprenticevr-2.1.0-arm64.deb](https://github.com/mula-bb/apprenticeVrSrc/releases/download/v2.1.0/apprenticevr-2.1.0-arm64.deb) | Debian/Ubuntu arm64 | 87 MB |
 
 ## Server Configuration (Required on First Run)
-
+> STEP 2:
 You must provide your own `ServerInfo.json` configuration file.
 
 On first launch, the app will show a dialog with the location of the config file. You can also create it manually:
@@ -39,9 +40,20 @@ Create or edit the file with the following format:
 
 **IMPORTANT:** The `ServerInfo.json` file **must** use Linux/LF line endings (`\n`), **not** Windows/CRLF line endings (`\r\n`). This applies to **all platforms** (Windows, macOS, and Linux). Most modern text editors (VS Code, Notepad++, Sublime Text) can set line endings — make sure it is set to `LF` before saving. If the app fails to read your credentials, incorrect line endings are the most common cause.
 
-Then restart the app. If credentials change in the future, just update this file — no rebuild needed.
 
-## Building for Release
+> STEP 3 (FINAL STEP): Restart the app. If credentials change in the future, just update this file — no rebuild needed.
+-
+-
+-
+-
+-
+-
+-
+-
+-
+-
+## Building for Release 
+**(ONLY NEEDED IF YOU ARE TRYING TO BUILD FOR SOURCE OR WORK ON THE PROJECT YOURSELF, DOWNLOAD FROM THE TABLE AT THE TOP AND CHOOSE YOUR OPERATING SYSTEM INSTEAD)**
 
 ### Prerequisites
 
