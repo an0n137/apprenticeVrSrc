@@ -104,8 +104,6 @@ Up to 5 downloads run in parallel.
 
 ## What's New in VRSrc Edition
 
-See the full [Release Notes](RELEASE_NOTES.md) for a detailed changelog.
-
 ### Key Improvements
 
 - **Local file upload** — upload game folders or ZIP files directly from your PC without a connected Quest

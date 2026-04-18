@@ -104,8 +104,6 @@ Se ejecutan hasta 5 descargas en paralelo.
 
 ## Novedades de la Edición VRSrc
 
-Consulta las [Notas de la versión](RELEASE_NOTES.es.md) completas para ver el registro de cambios detallado.
-
 ### Principales mejoras
 
 - **Subida de archivos locales** — sube carpetas de juegos o archivos ZIP directamente desde tu PC sin necesidad de conectar el Quest
