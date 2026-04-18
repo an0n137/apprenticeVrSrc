@@ -13,7 +13,9 @@ import {
   Mirror,
   MirrorTestResult,
   ServerConfigInfo,
-  WiFiBookmark
+  WiFiBookmark,
+  LocalUploadError,
+  AppLanguage
 } from './index'
 
 // Define types for all IPC channels between renderer and main
@@ -78,9 +80,11 @@ export interface IPCChannels {
     [packageName: string, gameName: string, versionCode: number, deviceId: string],
     boolean
   >
+  'upload:add-local-items': DefineChannel<[paths: string[]], { errors: LocalUploadError[] }>
 
   // App info
   'app:get-version': DefineChannel<[], string>
+  'app:get-locale': DefineChannel<[], string>
 
   // Update related channels
   'update:check-for-updates': DefineChannel<[], void>
@@ -96,6 +100,8 @@ export interface IPCChannels {
   'settings:set-color-scheme': DefineChannel<[scheme: 'light' | 'dark'], void>
   'settings:get-server-config': DefineChannel<[], ServerConfigInfo>
   'settings:set-server-config': DefineChannel<[config: ServerConfigInfo], void>
+  'settings:get-language': DefineChannel<[], AppLanguage>
+  'settings:set-language': DefineChannel<[lang: AppLanguage], void>
 
   // Log upload related channels
   'logs:upload-current': DefineChannel<[], { url: string; password: string } | null>
@@ -126,6 +132,8 @@ export interface IPCChannels {
   'dialog:show-manual-install-picker': DefineChannel<[], string | null>
   'dialog:show-apk-file-picker': DefineChannel<[], string | null>
   'dialog:show-folder-picker': DefineChannel<[], string | null>
+  'dialog:show-local-folder-picker': DefineChannel<[], string[] | null>
+  'dialog:show-local-zip-picker': DefineChannel<[], string[] | null>
 
   // Manual installation channels
   'downloads:install-manual': DefineChannel<[filePath: string, deviceId: string], boolean>

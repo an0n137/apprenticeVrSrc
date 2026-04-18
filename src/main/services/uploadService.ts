@@ -1,13 +1,19 @@
 import { app, BrowserWindow } from 'electron'
 import { promises as fs, existsSync } from 'fs'
-import { join, dirname } from 'path'
+import { join, dirname, basename } from 'path'
 import { EventEmitter } from 'events'
 import crypto from 'crypto'
 import { execa } from 'execa'
 import adbService from './adbService'
 import dependencyService from './dependencyService'
 import gameService from './gameService'
-import { ServiceStatus, UploadPreparationProgress, UploadStatus, UploadItem } from '@shared/types'
+import {
+  ServiceStatus,
+  UploadPreparationProgress,
+  UploadStatus,
+  UploadItem,
+  LocalUploadError
+} from '@shared/types'
 import { typedWebContentsSend } from '@shared/ipc-utils'
 import SevenZip from 'node-7z'
 
@@ -267,33 +273,36 @@ class UploadService extends EventEmitter {
     console.log(`[UploadService] Processing next upload: ${nextItem.packageName}`)
 
     try {
-      // Update status to Preparing
       this.updateItemStatus(nextItem.packageName, 'Preparing')
 
-      // Start the upload process
-      const zipPath = await this.prepareUpload(
-        nextItem.packageName,
-        nextItem.gameName,
-        nextItem.versionCode,
-        nextItem.deviceId
-      )
-
-      if (zipPath) {
-        console.log(`[UploadService] Upload completed successfully for ${nextItem.packageName}`)
-        this.updateItemStatus(
+      if (nextItem.isLocalUpload) {
+        const success = await this.processLocalUpload(nextItem)
+        if (!success && nextItem.status !== 'Cancelled') {
+          this.updateItemStatus(nextItem.packageName, 'Error', 0, 'Error', 'Upload failed')
+        }
+      } else {
+        const zipPath = await this.prepareUpload(
           nextItem.packageName,
-          'Completed',
-          100,
-          'Complete',
-          undefined,
-          zipPath
+          nextItem.gameName,
+          nextItem.versionCode,
+          nextItem.deviceId
         )
 
-        // Add to blacklist when successfully uploaded, with specific version
-        await gameService.addToBlacklist(nextItem.packageName, nextItem.versionCode)
-      } else {
-        console.error(`[UploadService] Upload failed for ${nextItem.packageName}`)
-        this.updateItemStatus(nextItem.packageName, 'Error', 0, 'Error', 'Upload failed')
+        if (zipPath) {
+          console.log(`[UploadService] Upload completed successfully for ${nextItem.packageName}`)
+          this.updateItemStatus(
+            nextItem.packageName,
+            'Completed',
+            100,
+            'Complete',
+            undefined,
+            zipPath
+          )
+          await gameService.addToBlacklist(nextItem.packageName, nextItem.versionCode)
+        } else {
+          console.error(`[UploadService] Upload failed for ${nextItem.packageName}`)
+          this.updateItemStatus(nextItem.packageName, 'Error', 0, 'Error', 'Upload failed')
+        }
       }
     } catch (error) {
       console.error(`[UploadService] Error processing upload for ${nextItem.packageName}:`, error)
@@ -306,8 +315,160 @@ class UploadService extends EventEmitter {
       )
     } finally {
       this.isProcessing = false
-      this.processQueue() // Process next item in queue
+      this.processQueue()
     }
+  }
+
+  private async validateLocalFolder(folderPath: string): Promise<void> {
+    const entries = await fs.readdir(folderPath)
+    const apkFiles = entries.filter((e) => e.toLowerCase().endsWith('.apk'))
+
+    if (apkFiles.length === 0) {
+      throw new Error(`No APK file found in folder "${basename(folderPath)}"`)
+    }
+
+    if (apkFiles.length > 1) {
+      throw new Error(
+        `Multiple APK files found in "${basename(folderPath)}": ${apkFiles.join(', ')}. ` +
+          `Each folder must contain exactly one APK file.`
+      )
+    }
+  }
+
+  private async processLocalUpload(item: UploadItem): Promise<boolean> {
+    if (!item.sourcePath) return false
+
+    try {
+      const isZip = item.sourcePath.toLowerCase().endsWith('.zip')
+
+      if (isZip) {
+        this.updateItemStatus(item.packageName, 'Uploading', 0, 'Uploading to server')
+        this.updateProgress(item.packageName, UploadStage.Uploading, 0)
+        const success = await this.uploadToServer(item.packageName, item.sourcePath)
+        if (!success) throw new Error('Upload failed')
+        this.updateItemStatus(item.packageName, 'Completed', 100, 'Complete')
+        return true
+      } else {
+        // Compress folder contents then upload
+        this.updateProgress(item.packageName, UploadStage.Compressing, 0)
+
+        const sevenZipPath = dependencyService.get7zPath()
+        if (!sevenZipPath) throw new Error('7zip not found. Cannot create zip archive.')
+
+        const safeGameName = item.gameName.replace(/[<>:"/\\|?*]/g, '_')
+        const zipFilePath = join(this.uploadsBasePath, `${safeGameName}.zip`)
+
+        if (existsSync(zipFilePath)) {
+          await fs.unlink(zipFilePath)
+        }
+
+        await new Promise<void>((resolve, reject) => {
+          const myStream = SevenZip.add(zipFilePath, `${item.sourcePath}/*`, {
+            $bin: sevenZipPath,
+            $progress: true
+          })
+
+          if (!myStream) {
+            reject(new Error('Failed to start 7zip compression process.'))
+            return
+          }
+
+          this.activeCompression = myStream
+
+          myStream.on('progress', (progress) => {
+            this.updateProgress(item.packageName, UploadStage.Compressing, progress.percent)
+          })
+          myStream.on('end', () => {
+            this.activeCompression = null
+            resolve()
+          })
+          myStream.on('error', (error) => {
+            this.activeCompression = null
+            reject(error)
+          })
+        })
+
+        this.updateProgress(item.packageName, UploadStage.Compressing, 100)
+
+        this.updateItemStatus(item.packageName, 'Uploading', 0, 'Uploading to server')
+        this.updateProgress(item.packageName, UploadStage.Uploading, 0)
+        const success = await this.uploadToServer(item.packageName, zipFilePath)
+        if (!success) throw new Error('Upload failed')
+        this.updateItemStatus(item.packageName, 'Completed', 100, 'Complete')
+        return true
+      }
+    } catch (error) {
+      console.error(`[UploadService] Error processing local upload for ${item.gameName}:`, error)
+      this.emitProgress(item.packageName, 'Error', 0)
+      return false
+    }
+  }
+
+  public async addLocalItemsToQueue(
+    paths: string[]
+  ): Promise<{ errors: LocalUploadError[] }> {
+    const errors: LocalUploadError[] = []
+
+    // Validate all items first - refuse to add anything if any fail
+    for (const itemPath of paths) {
+      try {
+        const isZip = itemPath.toLowerCase().endsWith('.zip')
+        if (!isZip) {
+          const stat = await fs.stat(itemPath)
+          if (!stat.isDirectory()) {
+            errors.push({
+              path: itemPath,
+              error: `"${basename(itemPath)}" is not a folder or ZIP file`
+            })
+            continue
+          }
+          await this.validateLocalFolder(itemPath)
+        } else {
+          // Verify the zip file exists and is readable
+          await fs.access(itemPath)
+        }
+      } catch (error) {
+        errors.push({
+          path: itemPath,
+          error: error instanceof Error ? error.message : 'Unknown validation error'
+        })
+      }
+    }
+
+    if (errors.length > 0) {
+      return { errors }
+    }
+
+    // All valid — add to queue
+    for (const itemPath of paths) {
+      const name = basename(itemPath)
+      const isZip = name.toLowerCase().endsWith('.zip')
+      const displayName = isZip ? name.slice(0, -4) : name
+      const uniqueId = `local_${crypto.randomBytes(4).toString('hex')}_${Date.now()}`
+
+      const newItem: UploadItem = {
+        packageName: uniqueId,
+        gameName: displayName,
+        versionCode: 0,
+        deviceId: 'local',
+        status: 'Queued',
+        progress: 0,
+        addedDate: Date.now(),
+        isLocalUpload: true,
+        sourcePath: itemPath
+      }
+
+      this.uploadQueue.push(newItem)
+      console.log(`[UploadService] Added local item "${displayName}" to upload queue.`)
+    }
+
+    this.emitQueueUpdated()
+
+    if (!this.isProcessing) {
+      this.processQueue()
+    }
+
+    return { errors: [] }
   }
 
   public async prepareUpload(

@@ -235,6 +235,7 @@ app.whenReady().then(async () => {
 
   // --- App Info Handlers ---
   typedIpcMain.handle('app:get-version', () => app.getVersion())
+  typedIpcMain.handle('app:get-locale', () => app.getLocale())
 
   // --- Dependency Handlers ---
   typedIpcMain.handle('dependency:get-status', async () => dependencyService.getStatus())
@@ -361,6 +362,11 @@ app.whenReady().then(async () => {
     uploadService.cancelUpload(packageName)
   })
 
+  typedIpcMain.handle('upload:add-local-items', async (_event, paths) => {
+    console.log(`[IPC] Adding local items to upload queue: ${paths.join(', ')}`)
+    return uploadService.addLocalItemsToQueue(paths)
+  })
+
   typedIpcMain.handle('download:remove', async (_event, releaseName) => {
     console.log(`[IPC] Removing from download queue: ${releaseName}`)
     await downloadService.removeFromQueue(releaseName)
@@ -459,6 +465,8 @@ app.whenReady().then(async () => {
   typedIpcMain.handle('settings:set-server-config', (_event, config) =>
     settingsService.setServerConfig(config)
   )
+  typedIpcMain.handle('settings:get-language', () => settingsService.getLanguage())
+  typedIpcMain.handle('settings:set-language', (_event, lang) => settingsService.setLanguage(lang))
 
   // --- Logs Handlers ---
   typedIpcMain.handle('logs:upload-current', async () => {
@@ -644,6 +652,31 @@ app.whenReady().then(async () => {
     }
 
     return filePaths[0]
+  })
+
+  typedIpcMain.handle('dialog:show-local-folder-picker', async () => {
+    if (!mainWindow) return null
+
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory', 'multiSelections'],
+      title: 'Select game folders to upload'
+    })
+
+    if (canceled || filePaths.length === 0) return null
+    return filePaths
+  })
+
+  typedIpcMain.handle('dialog:show-local-zip-picker', async () => {
+    if (!mainWindow) return null
+
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'ZIP Archives', extensions: ['zip'] }],
+      title: 'Select ZIP files to upload'
+    })
+
+    if (canceled || filePaths.length === 0) return null
+    return filePaths
   })
 
   typedIpcMain.handle('downloads:install-manual', async (_event, filePath, deviceId) => {
