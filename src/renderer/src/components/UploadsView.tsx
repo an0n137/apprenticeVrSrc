@@ -12,12 +12,19 @@ import {
   tokens
 } from '@fluentui/react-components'
 import { useUpload } from '../hooks/useUpload'
+import { useLanguage } from '../hooks/useLanguage'
 import { UploadItem } from '@shared/types'
 import { DismissRegular, DeleteRegular, ArrowCounterclockwiseRegular } from '@fluentui/react-icons'
+import LocalUploadDialog from './LocalUploadDialog'
 
 const useStyles = makeStyles({
   wrapper: {
     padding: '20px'
+  },
+  topBar: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    marginBottom: tokens.spacingVerticalM
   },
   emptyState: {
     textAlign: 'center',
@@ -39,22 +46,22 @@ const useStyles = makeStyles({
 const UploadRow: React.FC<{ item: UploadItem }> = ({ item }) => {
   const styles = useStyles()
   const { removeFromQueue, cancelUpload } = useUpload()
+  const { t } = useLanguage()
 
   let statusElement = <Text>{item.status}</Text>
   let actions: React.ReactNode = null
 
-  // Get progress value outside of switch to avoid lexical declaration issues
   const progressValue = item.progress || 0
 
   switch (item.status) {
     case 'Queued':
-      statusElement = <Text>Waiting in queue</Text>
+      statusElement = <Text>{t('waitingInQueue')}</Text>
       actions = (
         <Button
           icon={<DismissRegular />}
           appearance="subtle"
           onClick={() => removeFromQueue(item.packageName)}
-          aria-label="Remove from queue"
+          aria-label={t('removeFromQueue')}
         />
       )
       break
@@ -76,19 +83,19 @@ const UploadRow: React.FC<{ item: UploadItem }> = ({ item }) => {
           icon={<DismissRegular />}
           appearance="subtle"
           onClick={() => cancelUpload(item.packageName)}
-          aria-label="Cancel upload"
+          aria-label={t('cancelUpload')}
         />
       )
       break
 
     case 'Completed':
-      statusElement = <Text weight="semibold">Completed</Text>
+      statusElement = <Text weight="semibold">{t('completed')}</Text>
       actions = (
         <Button
           icon={<DeleteRegular />}
           appearance="subtle"
           onClick={() => removeFromQueue(item.packageName)}
-          aria-label="Remove from history"
+          aria-label={t('removeFromHistory')}
         />
       )
       break
@@ -100,7 +107,7 @@ const UploadRow: React.FC<{ item: UploadItem }> = ({ item }) => {
             weight="semibold"
             style={{ color: tokens.colorPaletteRedForeground1, marginRight: '4px' }}
           >
-            Error
+            {t('error')}
           </Text>
           {item.error && <Text size={200}>{item.error}</Text>}
         </>
@@ -110,31 +117,26 @@ const UploadRow: React.FC<{ item: UploadItem }> = ({ item }) => {
           icon={<DeleteRegular />}
           appearance="subtle"
           onClick={() => removeFromQueue(item.packageName)}
-          aria-label="Remove from queue"
+          aria-label={t('removeFromQueue')}
         />
       )
       break
 
     case 'Cancelled':
-      statusElement = <Text>Cancelled</Text>
+      statusElement = <Text>{t('cancelled')}</Text>
       actions = (
         <>
           <Button
             icon={<ArrowCounterclockwiseRegular />}
             appearance="subtle"
-            onClick={() => {
-              removeFromQueue(item.packageName)
-              // Re-add the item to the queue
-              // This isn't ideal - we should have a retry function
-              // but this is a quick way to restart
-            }}
-            aria-label="Retry upload"
+            onClick={() => removeFromQueue(item.packageName)}
+            aria-label={t('retryUpload')}
           />
           <Button
             icon={<DeleteRegular />}
             appearance="subtle"
             onClick={() => removeFromQueue(item.packageName)}
-            aria-label="Remove from queue"
+            aria-label={t('removeFromQueue')}
           />
         </>
       )
@@ -144,14 +146,10 @@ const UploadRow: React.FC<{ item: UploadItem }> = ({ item }) => {
   return (
     <TableRow>
       <TableCell>{item.gameName}</TableCell>
-      <TableCell
-        style={{
-          wordBreak: 'break-all'
-        }}
-      >
-        {item.packageName}
+      <TableCell style={{ wordBreak: 'break-all' }}>
+        {item.isLocalUpload ? <em style={{ color: tokens.colorNeutralForeground3 }}>local</em> : item.packageName}
       </TableCell>
-      <TableCell>{item.versionCode}</TableCell>
+      <TableCell>{item.versionCode > 0 ? item.versionCode : '—'}</TableCell>
       <TableCell>{statusElement}</TableCell>
       <TableCell>{actions}</TableCell>
     </TableRow>
@@ -161,24 +159,29 @@ const UploadRow: React.FC<{ item: UploadItem }> = ({ item }) => {
 const UploadsView: React.FC = () => {
   const styles = useStyles()
   const { queue } = useUpload()
+  const { t } = useLanguage()
 
   return (
     <div className={styles.wrapper}>
+      <div className={styles.topBar}>
+        <LocalUploadDialog />
+      </div>
+
       {queue.length === 0 ? (
         <div className={styles.emptyState}>
           <Text size={200} weight="semibold">
-            No uploads in queue
+            {t('noUploadsInQueue')}
           </Text>
         </div>
       ) : (
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHeaderCell>Game</TableHeaderCell>
-              <TableHeaderCell>Package Name</TableHeaderCell>
-              <TableHeaderCell>Version</TableHeaderCell>
-              <TableHeaderCell>Status</TableHeaderCell>
-              <TableHeaderCell>Actions</TableHeaderCell>
+              <TableHeaderCell>{t('game')}</TableHeaderCell>
+              <TableHeaderCell>{t('packageName')}</TableHeaderCell>
+              <TableHeaderCell>{t('version')}</TableHeaderCell>
+              <TableHeaderCell>{t('status')}</TableHeaderCell>
+              <TableHeaderCell>{t('actions')}</TableHeaderCell>
             </TableRow>
           </TableHeader>
           <TableBody>

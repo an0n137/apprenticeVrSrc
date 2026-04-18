@@ -1,4 +1,4 @@
-import { Settings, SettingsAPI, ServerConfigInfo } from '@shared/types'
+import { Settings, SettingsAPI, ServerConfigInfo, AppLanguage } from '@shared/types'
 import { app, nativeTheme } from 'electron'
 import { join } from 'path'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
@@ -12,6 +12,10 @@ class SettingsService extends EventEmitter implements SettingsAPI {
     super()
     this.settingsPath = join(app.getPath('userData'), 'settings.json')
 
+    // Detect system language — default to Spanish if system locale starts with 'es'
+    const systemLocale = app.getLocale()
+    const defaultLanguage: AppLanguage = systemLocale.toLowerCase().startsWith('es') ? 'es' : 'en'
+
     // Default settings
     this.settings = {
       downloadPath: join(app.getPath('userData'), 'downloads'),
@@ -19,7 +23,8 @@ class SettingsService extends EventEmitter implements SettingsAPI {
       uploadSpeedLimit: 0,
       hideAdultContent: true,
       colorScheme: nativeTheme.shouldUseDarkColors ? 'dark' : 'light',
-      serverConfig: { baseUri: '', password: '' }
+      serverConfig: { baseUri: '', password: '' },
+      language: defaultLanguage
     }
 
     // Load settings from disk
@@ -80,6 +85,16 @@ class SettingsService extends EventEmitter implements SettingsAPI {
     }
     this.saveSettings()
     this.emit('server-config-changed', this.settings.serverConfig)
+  }
+
+  getLanguage(): AppLanguage {
+    return this.settings.language ?? 'en'
+  }
+
+  setLanguage(lang: AppLanguage): void {
+    this.settings.language = lang
+    this.saveSettings()
+    this.emit('language-changed', lang)
   }
 
   private loadSettings(): void {

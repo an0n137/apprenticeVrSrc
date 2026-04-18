@@ -20,11 +20,13 @@ import {
 import { useGames } from '../hooks/useGames'
 import { useAdb } from '@renderer/hooks/useAdb'
 import { useUpload } from '@renderer/hooks/useUpload'
+import { useLanguage } from '@renderer/hooks/useLanguage'
 
 const UploadGamesDialog: React.FC = () => {
   const { uploadCandidates, addGameToBlacklist } = useGames()
   const { selectedDevice } = useAdb()
   const { addToQueue } = useUpload()
+  const { t } = useLanguage()
   const [showUploadDialog, setShowUploadDialog] = useState<boolean>(false)
   const [selectedCandidates, setSelectedCandidates] = useState<{ [key: string]: boolean }>({})
 
@@ -118,12 +120,9 @@ const UploadGamesDialog: React.FC = () => {
         }}
       >
         <DialogBody>
-          <DialogTitle>Upload Games</DialogTitle>
+          <DialogTitle>{t('uploadGamesTitle')}</DialogTitle>
           <DialogContent>
-            <Text>
-              We found games on your device that could benefit the community. These games
-              are either missing in our database or newer than the versions we have.
-            </Text>
+            <Text>{t('uploadGamesDescription')}</Text>
 
             <Table style={{ marginTop: '16px' }}>
               <TableHeader>
@@ -134,12 +133,12 @@ const UploadGamesDialog: React.FC = () => {
                       indeterminate={headerCheckboxState.indeterminate}
                       onChange={(_event, data) => handleSelectAll(!!data.checked)}
                     />
-                    Upload
+                    {t('uploadColumn')}
                   </TableHeaderCell>
-                  <TableHeaderCell>Game</TableHeaderCell>
-                  <TableHeaderCell>Package</TableHeaderCell>
-                  <TableHeaderCell style={{ width: '100px' }}>Version</TableHeaderCell>
-                  <TableHeaderCell>Status</TableHeaderCell>
+                  <TableHeaderCell>{t('game')}</TableHeaderCell>
+                  <TableHeaderCell>{t('packageName')}</TableHeaderCell>
+                  <TableHeaderCell style={{ width: '100px' }}>{t('version')}</TableHeaderCell>
+                  <TableHeaderCell>{t('status')}</TableHeaderCell>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -158,8 +157,8 @@ const UploadGamesDialog: React.FC = () => {
                       <TableCell>{candidate.versionCode}</TableCell>
                       <TableCell>
                         {candidate.reason === 'missing'
-                          ? 'Missing from database'
-                          : `Newer than database (${candidate.storeVersion})`}
+                          ? t('missingFromDatabase')
+                          : `${t('newerThanDatabase')} (${candidate.storeVersion})`}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -168,21 +167,21 @@ const UploadGamesDialog: React.FC = () => {
           </DialogContent>
           <DialogActions>
             <DialogTrigger disableButtonEnhancement>
-              <Button appearance="secondary">Cancel</Button>
+              <Button appearance="secondary">{t('cancel')}</Button>
             </DialogTrigger>
             <Button
               appearance="secondary"
               onClick={handleBlacklist}
               disabled={Object.values(selectedCandidates).every((value) => value === false)}
             >
-              Blacklist Selected
+              {t('blacklistSelected')}
             </Button>
             <Button
               appearance="primary"
               onClick={handleUpload}
               disabled={Object.values(selectedCandidates).every((value) => value === false)}
             >
-              Upload Selected Games
+              {t('uploadSelectedGames')}
             </Button>
           </DialogActions>
         </DialogBody>

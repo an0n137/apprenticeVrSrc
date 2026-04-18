@@ -43,6 +43,8 @@ import { UploadProvider } from '@renderer/context/UploadProvider'
 import { useUpload } from '@renderer/hooks/useUpload'
 import { GameDialogProvider } from '@renderer/context/GameDialogProvider'
 import { useSettings } from '@renderer/hooks/useSettings'
+import { LanguageProvider } from '@renderer/context/LanguageProvider'
+import { useLanguage } from '@renderer/hooks/useLanguage'
 
 enum AppView {
   DEVICE_LIST,
@@ -257,6 +259,7 @@ const AppLayout: React.FC = () => {
   const styles = useStyles()
   const { queue: downloadQueue } = useDownload()
   const { queue: uploadQueue } = useUpload()
+  const { t } = useLanguage()
 
   const handleDeviceConnected = (): void => {
     setCurrentView(AppView.GAMES)
@@ -319,46 +322,24 @@ const AppLayout: React.FC = () => {
 
     if (activeDownloads.length > 0) {
       const activeDownload = activeDownloads[0]
-      const activeDownloadName = activeDownload.gameName
       const activeDownloadProgress = activeDownload.progress
       const activeDownloadEta = activeDownload.eta || ''
       const activeDownloadSpeed = activeDownload.speed || ''
-      let text = `${activeDownloadName} (${activeDownloadProgress}%) ${activeDownloadEta} ${activeDownloadSpeed}`
-      if (queuedDownloads.length > 0) {
-        text += ` (+${queuedDownloads.length})`
-      }
-      return {
-        icon: <Spinner size="tiny" style={{ animationDuration: '1s' }} />,
-        text
-      }
+      let text = `${activeDownload.gameName} (${activeDownloadProgress}%) ${activeDownloadEta} ${activeDownloadSpeed}`
+      if (queuedDownloads.length > 0) text += ` (+${queuedDownloads.length})`
+      return { icon: <Spinner size="tiny" style={{ animationDuration: '1s' }} />, text }
     } else if (extractingDownloads.length > 0) {
-      const extractingDownload = extractingDownloads[0]
-      const extractingDownloadName = extractingDownload.gameName
-      const extractingDownloadProgress = extractingDownload.extractProgress || 0
-      let text = `Extracting ${extractingDownloadName} (${extractingDownloadProgress}%)...`
-      if (queuedDownloads.length > 0) {
-        text += ` (+${queuedDownloads.length})`
-      }
-      return {
-        icon: <Spinner size="tiny" style={{ animationDuration: '1s' }} />,
-        text
-      }
+      const d = extractingDownloads[0]
+      let text = `${t('extracting')} ${d.gameName} (${d.extractProgress || 0}%)...`
+      if (queuedDownloads.length > 0) text += ` (+${queuedDownloads.length})`
+      return { icon: <Spinner size="tiny" style={{ animationDuration: '1s' }} />, text }
     } else if (installingDownloads.length > 0) {
-      const installingDownload = installingDownloads[0]
-      const installingDownloadName = installingDownload.gameName
-      let text = `Installing ${installingDownloadName}...`
-      if (queuedDownloads.length > 0) {
-        text += ` (+${queuedDownloads.length})`
-      }
-      return {
-        icon: <Spinner size="tiny" style={{ animationDuration: '1s' }} />,
-        text
-      }
+      const d = installingDownloads[0]
+      let text = `${t('installing')} ${d.gameName}...`
+      if (queuedDownloads.length > 0) text += ` (+${queuedDownloads.length})`
+      return { icon: <Spinner size="tiny" style={{ animationDuration: '1s' }} />, text }
     } else {
-      return {
-        icon: <DownloadIcon />,
-        text: 'Downloads'
-      }
+      return { icon: <DownloadIcon />, text: t('downloads') }
     }
   }
 
@@ -366,40 +347,19 @@ const AppLayout: React.FC = () => {
     const { preparingUploads, activeUploads, queuedUploads } = uploadQueueProgress
 
     if (activeUploads.length > 0) {
-      const activeUpload = activeUploads[0]
-      const activeUploadName = activeUpload.gameName
-      const activeUploadProgress = activeUpload.progress
-      let text = `Uploading ${activeUploadName} (${activeUploadProgress}%)`
-      if (queuedUploads.length > 0) {
-        text += ` (+${queuedUploads.length})`
-      }
-      return {
-        icon: <Spinner size="tiny" style={{ animationDuration: '1s' }} />,
-        text
-      }
+      const u = activeUploads[0]
+      let text = `${t('uploading')} ${u.gameName} (${u.progress}%)`
+      if (queuedUploads.length > 0) text += ` (+${queuedUploads.length})`
+      return { icon: <Spinner size="tiny" style={{ animationDuration: '1s' }} />, text }
     } else if (preparingUploads.length > 0) {
-      const preparingUpload = preparingUploads[0]
-      const preparingUploadName = preparingUpload.gameName
-      const preparingUploadProgress = preparingUpload.progress
-      const preparingUploadStage = preparingUpload.stage || 'Preparing'
-      let text = `${preparingUploadStage} ${preparingUploadName} (${preparingUploadProgress}%)`
-      if (queuedUploads.length > 0) {
-        text += ` (+${queuedUploads.length})`
-      }
-      return {
-        icon: <Spinner size="tiny" style={{ animationDuration: '1s' }} />,
-        text
-      }
+      const u = preparingUploads[0]
+      let text = `${u.stage || 'Preparing'} ${u.gameName} (${u.progress}%)`
+      if (queuedUploads.length > 0) text += ` (+${queuedUploads.length})`
+      return { icon: <Spinner size="tiny" style={{ animationDuration: '1s' }} />, text }
     } else if (queuedUploads.length > 0) {
-      return {
-        icon: <UploadIcon />,
-        text: `Uploads (${queuedUploads.length})`
-      }
+      return { icon: <UploadIcon />, text: `${t('uploads')} (${queuedUploads.length})` }
     } else {
-      return {
-        icon: <UploadIcon />,
-        text: 'Uploads'
-      }
+      return { icon: <UploadIcon />, text: t('uploads') }
     }
   }
 
@@ -455,16 +415,16 @@ const AppLayout: React.FC = () => {
                         className={styles.tabs}
                       >
                         <Tab value="games" icon={<DesktopRegular />}>
-                          Games
+                          {t('games')}
                         </Tab>
                         <Tab value="settings" icon={<SettingsRegular />}>
-                          Settings
+                          {t('settings')}
                         </Tab>
                       </TabList>
                     </>
                   )}
                   <Switch
-                    label={colorScheme === 'dark' ? 'Dark mode' : 'Light mode'}
+                    label={colorScheme === 'dark' ? t('darkMode') : t('lightMode')}
                     checked={colorScheme === 'dark'}
                     onChange={handleThemeChange}
                   />
@@ -498,13 +458,13 @@ const AppLayout: React.FC = () => {
                     action={
                       <Button
                         appearance="subtle"
-                        aria-label="Close"
+                        aria-label={t('close')}
                         icon={<CloseIcon />}
                         onClick={() => setIsDownloadsOpen(false)}
                       />
                     }
                   >
-                    Downloads
+                    {t('downloads')}
                   </DrawerHeaderTitle>
                 </DrawerHeader>
                 <DrawerBody>
@@ -528,13 +488,13 @@ const AppLayout: React.FC = () => {
                     action={
                       <Button
                         appearance="subtle"
-                        aria-label="Close"
+                        aria-label={t('close')}
                         icon={<CloseIcon />}
                         onClick={() => setIsUploadsOpen(false)}
                       />
                     }
                   >
-                    Uploads
+                    {t('uploads')}
                   </DrawerHeaderTitle>
                 </DrawerHeader>
                 <DrawerBody>
@@ -568,13 +528,15 @@ const AppLayout: React.FC = () => {
 const AppLayoutWithProviders: React.FC = () => {
   return (
     <SettingsProvider>
-      <DependencyProvider>
-        <DownloadProvider>
-          <UploadProvider>
-            <AppLayout />
-          </UploadProvider>
-        </DownloadProvider>
-      </DependencyProvider>
+      <LanguageProvider>
+        <DependencyProvider>
+          <DownloadProvider>
+            <UploadProvider>
+              <AppLayout />
+            </UploadProvider>
+          </DownloadProvider>
+        </DependencyProvider>
+      </LanguageProvider>
     </SettingsProvider>
   )
 }

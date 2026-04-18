@@ -21,13 +21,16 @@ import {
   MirrorAPIRenderer,
   Mirror,
   ServerConfigInfo,
-  WiFiBookmark
+  WiFiBookmark,
+  LocalUploadError,
+  AppLanguage
 } from '@shared/types'
 import { typedIpcRenderer } from '@shared/ipc-utils'
 
 const api = {
   app: {
-    getVersion: (): Promise<string> => typedIpcRenderer.invoke('app:get-version')
+    getVersion: (): Promise<string> => typedIpcRenderer.invoke('app:get-version'),
+    getLocale: (): Promise<string> => typedIpcRenderer.invoke('app:get-locale')
   },
   dependency: {
     getStatus: (): Promise<DependencyStatus> => typedIpcRenderer.invoke('dependency:get-status')
@@ -157,6 +160,8 @@ const api = {
       typedIpcRenderer.send('upload:remove', packageName),
     cancelUpload: (packageName: string): void =>
       typedIpcRenderer.send('upload:cancel', packageName),
+    addLocalItemsToQueue: (paths: string[]): Promise<{ errors: LocalUploadError[] }> =>
+      typedIpcRenderer.invoke('upload:add-local-items', paths),
     onUploadProgress: (callback: (progress: UploadPreparationProgress) => void): (() => void) => {
       const listener = (_: IpcRendererEvent, progress: UploadPreparationProgress): void =>
         callback(progress)
@@ -210,7 +215,10 @@ const api = {
     getServerConfig: (): Promise<ServerConfigInfo> =>
       typedIpcRenderer.invoke('settings:get-server-config'),
     setServerConfig: (config: ServerConfigInfo): Promise<void> =>
-      typedIpcRenderer.invoke('settings:set-server-config', config)
+      typedIpcRenderer.invoke('settings:set-server-config', config),
+    getLanguage: (): Promise<AppLanguage> => typedIpcRenderer.invoke('settings:get-language'),
+    setLanguage: (lang: AppLanguage): Promise<void> =>
+      typedIpcRenderer.invoke('settings:set-language', lang)
   } satisfies SettingsAPIRenderer,
   // Logs APIs
   logs: {
@@ -259,7 +267,11 @@ const api = {
     showApkFilePicker: (): Promise<string | null> =>
       typedIpcRenderer.invoke('dialog:show-apk-file-picker'),
     showFolderPicker: (): Promise<string | null> =>
-      typedIpcRenderer.invoke('dialog:show-folder-picker')
+      typedIpcRenderer.invoke('dialog:show-folder-picker'),
+    showLocalFolderPicker: (): Promise<string[] | null> =>
+      typedIpcRenderer.invoke('dialog:show-local-folder-picker'),
+    showLocalZipPicker: (): Promise<string[] | null> =>
+      typedIpcRenderer.invoke('dialog:show-local-zip-picker')
   },
   // WiFi bookmarks API
   wifiBookmarks: {

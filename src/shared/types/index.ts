@@ -111,6 +111,8 @@ export interface UploadItem {
   error?: string
   addedDate: number
   zipPath?: string
+  isLocalUpload?: boolean
+  sourcePath?: string
 }
 
 // Download types
@@ -276,6 +278,11 @@ export interface DownloadAPIRenderer extends DownloadAPI {
   copyObbFolder: (folderPath: string, deviceId: string) => Promise<boolean>
 }
 
+export interface LocalUploadError {
+  path: string
+  error: string
+}
+
 export interface UploadAPI {
   prepareUpload: (
     packageName: string,
@@ -292,6 +299,7 @@ export interface UploadAPI {
   ) => Promise<boolean>
   removeFromQueue: (packageName: string) => void
   cancelUpload: (packageName: string) => void
+  addLocalItemsToQueue: (paths: string[]) => Promise<{ errors: LocalUploadError[] }>
 }
 
 export interface UploadAPIRenderer extends UploadAPI {
@@ -318,6 +326,8 @@ export interface ServerConfigInfo {
   password: string
 }
 
+export type AppLanguage = 'en' | 'es'
+
 export interface Settings {
   downloadPath: string
   downloadSpeedLimit: number
@@ -325,6 +335,7 @@ export interface Settings {
   hideAdultContent: boolean
   colorScheme: 'light' | 'dark'
   serverConfig: ServerConfigInfo
+  language?: AppLanguage
 }
 
 export interface SettingsAPI {
@@ -338,6 +349,8 @@ export interface SettingsAPI {
   setColorScheme: (scheme: 'light' | 'dark') => void
   getServerConfig: () => ServerConfigInfo
   setServerConfig: (config: ServerConfigInfo) => void
+  getLanguage: () => AppLanguage
+  setLanguage: (lang: AppLanguage) => void
 }
 
 export interface SettingsAPIRenderer
@@ -354,6 +367,8 @@ export interface SettingsAPIRenderer
       setColorScheme: (scheme: 'light' | 'dark') => Promise<void>
       getServerConfig: () => Promise<ServerConfigInfo>
       setServerConfig: (config: ServerConfigInfo) => Promise<void>
+      getLanguage: () => Promise<AppLanguage>
+      setLanguage: (lang: AppLanguage) => Promise<void>
     }
   > {}
 
