@@ -88,7 +88,7 @@ jobs:
             echo "BUILD_COMMAND=npx electron-vite build && npx electron-builder --win --x64 --ia32 --publish never" >> $GITHUB_OUTPUT
             echo "ARTIFACT_PATH=${OUTPUT_DIR}/${PRODUCT_NAME}-${VERSION}-*.exe" >> $GITHUB_OUTPUT
           elif [ "$RUNNER_OS" == "macOS" ]; then
-            echo "BUILD_COMMAND=npx electron-vite build && npx electron-builder --mac --x64 --publish never" >> $GITHUB_OUTPUT
+            echo "BUILD_COMMAND=npx electron-vite build && npx electron-builder --mac --x64 --arm64 --publish never" >> $GITHUB_OUTPUT
             echo "ARTIFACT_PATH=${OUTPUT_DIR}/${PRODUCT_NAME}-${VERSION}-*.dmg" >> $GITHUB_OUTPUT
           elif [ "$RUNNER_OS" == "Linux" ]; then
             echo "BUILD_COMMAND=npx electron-vite build && npx electron-builder --linux --x64 --arm64 --publish never" >> $GITHUB_OUTPUT
@@ -99,7 +99,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ELECTRON_BUILDER_DOWNLOAD_TIMEOUT: 120000
-          ELECTRON_BUILDER_BINARIES_MIRROR: https://github.com/electron-userland/electron-builder-binaries/releases/download/
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://mirrors.huaweicloud.com/electron-builder-binaries/
           npm_config_fetch_timeout: 120000
           npm_config_fetch_retry_mintimeout: 20000
           npm_config_fetch_retry_maxtimeout: 120000
