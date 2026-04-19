@@ -45,7 +45,7 @@ Los DMGs generados estarán en la carpeta `dist/`.
 
 ---
 
-Para la lista completa de funciones, instrucciones de configuración y resolución de problemas, consulta el [README](README.md).
+Para la lista completa de funciones, instrucciones de configuración y resolución de problemas, consulta el [README.md](https://github.com/KaladinDMP/apprenticeVrSrc/blob/main/README.es.md).
 
 ---
 
