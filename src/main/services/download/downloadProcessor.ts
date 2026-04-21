@@ -515,9 +515,14 @@ export class DownloadProcessor {
         this.queueManager.updateItem(item.releaseName, { pid: undefined })
       }
 
-      // Handle cancellation (SIGTERM = exit code 143 on unix, or cancelled status)
-      if (isExecaError(error) && (error.exitCode === 143 || error.isCanceled)) {
-        console.log(`[DownProc] rclone copy download cancelled for ${item.releaseName}`)
+      // Handle cancellation/pause: SIGTERM = exit code 143 on Unix; on Windows the exit
+      // code differs, so also check if the item was intentionally paused/cancelled.
+      if (
+        (isExecaError(error) && (error.exitCode === 143 || error.isCanceled)) ||
+        statusBeforeCatch === 'Paused' ||
+        statusBeforeCatch === 'Cancelled'
+      ) {
+        console.log(`[DownProc] rclone copy download cancelled/paused for ${item.releaseName}`)
         return { success: false, startExtraction: false, finalState: currentItemState }
       }
 
